@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import io
 import math
 import re
@@ -7,6 +8,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from collegegridiron.config import (
     REGULAR_LOOKBACK_GAMES,
@@ -48,6 +50,55 @@ ADV_TEAM_URLS = [
 ]
 BETTING_URLS = [
     "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_cfb_betting/betting_{year}.parquet",
+]
+
+PLAYER_BOX_COLUMNS = [
+    "game_id",
+    "athlete_id",
+    "athlete_name",
+    "team_id",
+    "team_abbreviation",
+    "season",
+    "completions/passingAttempts",
+    "passingYards",
+    "passingTouchdowns",
+    "interceptions",
+    "sacks",
+    "rushingAttempts",
+    "rushingYards",
+    "rushingTouchdowns",
+    "receptions",
+    "receivingYards",
+    "receivingTouchdowns",
+]
+ROSTER_COLUMNS = ["athlete_id", "position", "season", "year"]
+PLAYER_WEEK_COLUMNS = [
+    "player_id",
+    "player_name",
+    "position",
+    "team",
+    "opponent",
+    "season",
+    "week",
+    "season_type",
+    "game_id",
+    "is_home",
+    "completions",
+    "attempts",
+    "passing_yards",
+    "passing_tds",
+    "interceptions",
+    "sacks",
+    "carries",
+    "rushing_yards",
+    "rushing_tds",
+    "targets",
+    "receptions",
+    "receiving_yards",
+    "receiving_tds",
+    "rushing_receiving_yards",
+    "fantasy_points",
+    "practice_status",
 ]
 
 GAME_COLUMNS = [
@@ -170,14 +221,43 @@ def parse_slash(value) -> tuple[float | None, float | None]:
     return _num(parts[0]), _num(parts[1])
 
 
-def fetch_parquet(url: str) -> pd.DataFrame:
+def _mem() -> str:
+    try:
+        import resource
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        mb = rss / 1024 if rss < 10_000_000 else rss / (1024 * 1024)
+        return f"{mb:.0f}MB"
+    except Exception:
+        return "?"
+
+
+def fetch_parquet(url: str, columns: list[str] | None = None) -> pd.DataFrame:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=180) as resp:
         payload = resp.read()
-    return pd.read_parquet(io.BytesIO(payload))
+    buf = io.BytesIO(payload)
+    if not columns:
+        return pd.read_parquet(buf)
+    names = pq.read_schema(buf).names
+    buf.seek(0)
+    lower = {name.lower(): name for name in names}
+    selected = []
+    seen = set()
+    for name in columns:
+        hit = lower.get(name.lower())
+        if hit and hit not in seen:
+            selected.append(hit)
+            seen.add(hit)
+    table = pq.read_table(buf, columns=selected or None)
+    return table.to_pandas()
 
 
-def load_years(url_templates: list[str] | str, years: list[int]) -> pd.DataFrame:
+def load_years(
+    url_templates: list[str] | str,
+    years: list[int],
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
     templates = [url_templates] if isinstance(url_templates, str) else url_templates
     frames = []
     for year in years:
@@ -187,7 +267,7 @@ def load_years(url_templates: list[str] | str, years: list[int]) -> pd.DataFrame
             url = template.format(year=year)
             try:
                 print(f"  fetching {url}", flush=True)
-                frames.append(fetch_parquet(url))
+                frames.append(fetch_parquet(url, columns=columns))
                 loaded = True
                 break
             except Exception as exc:
@@ -196,7 +276,12 @@ def load_years(url_templates: list[str] | str, years: list[int]) -> pd.DataFrame
             print(f"  skip {year}: {last_error}", flush=True)
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    if len(frames) == 1:
+        return frames[0]
+    out = pd.concat(frames, ignore_index=True)
+    del frames
+    gc.collect()
+    return out
 
 
 def normalize_season_type(value) -> str:
@@ -676,12 +761,16 @@ def prepare_player_weeks(
         if _str(row.team_id)
     }
     keep_ids = set(games["game_id"].astype(str))
-    gid = _series(box, "game_id").map(lambda v: _str(v))
-    work = box.copy()
-    work["_gid"] = gid
-    work = work[work["_gid"].isin(keep_ids)]
+    gid = _series(box, "game_id")
+    if gid is None:
+        return pd.DataFrame()
+    gid = gid.map(lambda v: _str(v))
+    mask = gid.isin(keep_ids)
+    work = box.loc[mask]
     if work.empty:
         return pd.DataFrame()
+    work = work.copy()
+    work["_gid"] = gid.loc[mask]
 
     player_id = _series(work, "athlete_id").map(lambda v: _str(v))
     name = _series(work, "athlete_name")
@@ -749,10 +838,16 @@ def prepare_player_weeks(
     grouped["rushing_receiving_yards"] = grouped["rushing_yards"].fillna(0) + grouped[
         "receiving_yards"
     ].fillna(0)
-    grouped["fantasy_points"] = [
-        fantasy_points(row._asdict() if hasattr(row, "_asdict") else row)
-        for row in grouped.to_dict("records")
-    ]
+    grouped["fantasy_points"] = (
+        grouped["passing_yards"].fillna(0) / 25
+        + grouped["passing_tds"].fillna(0) * 4
+        - grouped["interceptions"].fillna(0) * 2
+        + grouped["rushing_yards"].fillna(0) / 10
+        + grouped["rushing_tds"].fillna(0) * 6
+        + grouped["receptions"].fillna(0)
+        + grouped["receiving_yards"].fillna(0) / 10
+        + grouped["receiving_tds"].fillna(0) * 6
+    ).round(2)
     grouped["practice_status"] = "none"
 
     lookup = {
@@ -916,8 +1011,11 @@ def _cell(value):
     return value
 
 
-def write_frame(conn, table: str, frame: pd.DataFrame, columns: list[str]) -> None:
-    conn.execute(f"DELETE FROM {table}")
+def write_frame(
+    conn, table: str, frame: pd.DataFrame, columns: list[str], replace: bool = True
+) -> None:
+    if replace:
+        conn.execute(f"DELETE FROM {table}")
     if frame is None or frame.empty:
         conn.commit()
         print(f"  {table}: 0 rows", flush=True)
@@ -938,13 +1036,15 @@ def write_frame(conn, table: str, frame: pd.DataFrame, columns: list[str]) -> No
 
 def run_ingest(years: list[int] | None = None) -> dict:
     years = years or ingest_years() or SEASONS
-    print(f"Ingesting FBS seasons {years[0]}-{years[-1]}", flush=True)
+    print(f"Ingesting FBS seasons {years[0]}-{years[-1]} (rss={_mem()})", flush=True)
     conn = connect()
     reset_schema(conn)
 
     print("Team directory", flush=True)
     info = load_years(TEAM_INFO_URLS, years)
     venues = prepare_team_venues(info)
+    del info
+    gc.collect()
     set_team_homes(venues.to_dict("records"))
     write_frame(
         conn,
@@ -974,12 +1074,16 @@ def run_ingest(years: list[int] | None = None) -> dict:
     print("Betting lines", flush=True)
     betting = load_years(BETTING_URLS, years)
     games = prepare_games(schedules, venues, betting)
+    del schedules, betting
+    gc.collect()
     write_frame(conn, "games", games, GAME_COLUMNS)
 
     print("Weekly team stats", flush=True)
     team_box = load_years(TEAM_BOX_URLS, years)
     adv = load_years(ADV_TEAM_URLS, years)
     team_weeks = prepare_team_weeks(team_box, adv, games, venues)
+    del team_box, adv
+    gc.collect()
     write_frame(
         conn,
         "team_weeks",
@@ -1009,63 +1113,55 @@ def run_ingest(years: list[int] | None = None) -> dict:
             "def_interceptions",
         ],
     )
+    team_week_count = 0 if team_weeks is None else len(team_weeks)
+    del team_weeks
+    gc.collect()
+    print(f"  after team weeks rss={_mem()}", flush=True)
 
-    print("Rosters", flush=True)
-    rosters = load_years(ROSTER_URLS, years)
-    print("Weekly player stats", flush=True)
-    player_box = load_years(PLAYER_BOX_URLS, years)
-    player_weeks = prepare_player_weeks(player_box, rosters, games, venues)
-    print(f"  player_weeks prepared: {len(player_weeks)}", flush=True)
+    latest_players: dict[str, tuple] = {}
+    player_week_count = 0
+    for year in years:
+        print(f"Weekly player stats {year} (rss={_mem()})", flush=True)
+        player_box = load_years(PLAYER_BOX_URLS, [year], columns=PLAYER_BOX_COLUMNS)
+        rosters = load_years(ROSTER_URLS, [year], columns=ROSTER_COLUMNS)
+        player_weeks = prepare_player_weeks(player_box, rosters, games, venues)
+        del player_box, rosters
+        gc.collect()
+        print(f"  player_weeks {year}: {len(player_weeks)} rss={_mem()}", flush=True)
+        if not player_weeks.empty:
+            for row in player_weeks.itertuples(index=False):
+                latest_players[row.player_id] = (
+                    row.player_id,
+                    row.player_name,
+                    row.position,
+                    row.team,
+                )
+            write_frame(conn, "player_weeks", player_weeks, PLAYER_WEEK_COLUMNS, replace=False)
+            player_week_count += len(player_weeks)
+        del player_weeks
+        gc.collect()
 
-    if not player_weeks.empty:
-        latest = (
-            player_weeks.sort_values(["season", "week"])
-            .groupby("player_id", as_index=False)
-            .tail(1)[["player_id", "player_name", "position", "team"]]
-            .rename(columns={"team": "latest_team"})
+    if latest_players:
+        latest = pd.DataFrame(
+            latest_players.values(),
+            columns=["player_id", "player_name", "position", "latest_team"],
         )
-        write_frame(
-            conn,
-            "players",
-            latest,
-            ["player_id", "player_name", "position", "latest_team"],
-        )
-        write_frame(
-            conn,
-            "player_weeks",
-            player_weeks,
-            [
-                "player_id",
-                "player_name",
-                "position",
-                "team",
-                "opponent",
-                "season",
-                "week",
-                "season_type",
-                "game_id",
-                "is_home",
-                "completions",
-                "attempts",
-                "passing_yards",
-                "passing_tds",
-                "interceptions",
-                "sacks",
-                "carries",
-                "rushing_yards",
-                "rushing_tds",
-                "targets",
-                "receptions",
-                "receiving_yards",
-                "receiving_tds",
-                "rushing_receiving_yards",
-                "fantasy_points",
-                "practice_status",
-            ],
-        )
+        write_frame(conn, "players", latest, ["player_id", "player_name", "position", "latest_team"])
+        del latest, latest_players
+        gc.collect()
 
-    print("Missing regulars (box-score DNPs)", flush=True)
+    print(f"Missing regulars (box-score DNPs) rss={_mem()}", flush=True)
+    player_weeks = pd.read_sql_query(
+        """
+        SELECT player_id, player_name, position, team, season, week,
+               carries, receptions, attempts
+        FROM player_weeks
+        """,
+        conn,
+    )
     missing = prepare_missing_regulars(player_weeks, games)
+    del player_weeks
+    gc.collect()
     write_frame(
         conn,
         "missing_regulars",
@@ -1083,6 +1179,8 @@ def run_ingest(years: list[int] | None = None) -> dict:
             "injury",
         ],
     )
+    del missing
+    gc.collect()
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
@@ -1098,12 +1196,12 @@ def run_ingest(years: list[int] | None = None) -> dict:
     )
     conn.commit()
     conn.close()
-    print("Done.", flush=True)
+    print(f"Done. rss={_mem()}", flush=True)
     return {
         "seasons": years,
         "games": 0 if games is None else len(games),
-        "team_weeks": 0 if team_weeks is None else len(team_weeks),
-        "player_weeks": 0 if player_weeks is None else len(player_weeks),
+        "team_weeks": team_week_count,
+        "player_weeks": player_week_count,
     }
 
 

@@ -20,6 +20,8 @@ services:
         value: 3.12.7
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: INGEST_SEASONS
+        value: "2022,2023,2024,2025"
       - key: CORS_ORIGINS
         value: https://theprofitengineer.com,https://www.theprofitengineer.com
 
