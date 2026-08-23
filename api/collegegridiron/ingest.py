@@ -5,7 +5,7 @@ import io
 import math
 import re
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -18,6 +18,7 @@ from collegegridiron.config import (
     ingest_years,
 )
 from collegegridiron.db import connect, reset_schema
+from collegegridiron.espn_schedule import load_espn_schedule
 from collegegridiron.venues import (
     is_altitude_game,
     is_early_window,
@@ -507,7 +508,9 @@ def add_road_streaks(games: pd.DataFrame) -> pd.DataFrame:
     return work.drop(columns=["sort_day"])
 
 
-def prepare_games(raw: pd.DataFrame, venues: pd.DataFrame, betting: pd.DataFrame) -> pd.DataFrame:
+def prepare_games(
+    raw: pd.DataFrame, venues: pd.DataFrame, betting: pd.DataFrame, finalize: bool = True
+) -> pd.DataFrame:
     if raw.empty:
         return raw
     school_to_abbr = {}
@@ -632,6 +635,8 @@ def prepare_games(raw: pd.DataFrame, venues: pd.DataFrame, betting: pd.DataFrame
     if "total_line" not in frame.columns:
         frame["total_line"] = None
 
+    if not finalize:
+        return frame
     frame = compute_rest(frame)
     frame = compute_streaks(frame)
     frame = enrich_games(frame)
@@ -1070,7 +1075,17 @@ def run_ingest(years: list[int] | None = None) -> dict:
     )
 
     print("Schedules", flush=True)
-    schedules = load_years(SCHEDULE_URLS, years)
+    schedule_frames = []
+    for year in years:
+        frame = load_years(SCHEDULE_URLS, [year])
+        if frame.empty:
+            print(f"  ESPN schedule fallback {year}", flush=True)
+            frame = load_espn_schedule(year)
+        if not frame.empty:
+            schedule_frames.append(frame)
+    schedules = (
+        pd.concat(schedule_frames, ignore_index=True) if schedule_frames else pd.DataFrame()
+    )
     print("Betting lines", flush=True)
     betting = load_years(BETTING_URLS, years)
     games = prepare_games(schedules, venues, betting)
@@ -1203,6 +1218,66 @@ def run_ingest(years: list[int] | None = None) -> dict:
         "team_weeks": team_week_count,
         "player_weeks": player_week_count,
     }
+
+
+def refresh_upcoming_schedules(years: list[int] | None = None) -> dict:
+    """Replace missing current-season games from ESPN without wiping history."""
+    years = years or [date.today().year]
+    print(f"Refreshing FBS schedule from ESPN for {years} (rss={_mem()})", flush=True)
+    conn = connect()
+    venues = pd.read_sql_query("SELECT * FROM team_venues", conn)
+    if venues.empty:
+        print("  no team_venues; skip schedule refresh", flush=True)
+        conn.close()
+        return {"seasons": years, "games": 0}
+    set_team_homes(venues.to_dict("records"))
+    existing = pd.read_sql_query("SELECT * FROM games", conn)
+    incoming_parts = []
+    for year in years:
+        raw = load_espn_schedule(year)
+        if raw.empty:
+            print(f"  no ESPN games for {year}", flush=True)
+            continue
+        incoming_parts.append(prepare_games(raw, venues, pd.DataFrame(), finalize=False))
+        del raw
+        gc.collect()
+    if not incoming_parts:
+        conn.close()
+        return {"seasons": years, "games": 0}
+    incoming = pd.concat(incoming_parts, ignore_index=True)
+    if not existing.empty and "season" in existing.columns:
+        existing["season"] = pd.to_numeric(existing["season"], errors="coerce")
+        keep = existing[~existing["season"].isin(years)]
+    else:
+        keep = pd.DataFrame()
+    combined = pd.concat([keep, incoming], ignore_index=True, sort=False)
+    combined = compute_rest(combined)
+    combined = compute_streaks(combined)
+    combined = enrich_games(combined)
+    for col in GAME_COLUMNS:
+        if col not in combined.columns:
+            combined[col] = None
+    conf = {str(row.team): row.conference for row in venues.itertuples(index=False)}
+    combined["home_conference"] = combined["home_conference"].fillna(
+        combined["home_team"].map(conf)
+    )
+    combined["away_conference"] = combined["away_conference"].fillna(
+        combined["away_team"].map(conf)
+    )
+    to_write = combined[combined["season"].isin(years)][GAME_COLUMNS].drop_duplicates(
+        "game_id", keep="last"
+    )
+    for year in years:
+        conn.execute("DELETE FROM games WHERE season = ?", (year,))
+    write_frame(conn, "games", to_write, GAME_COLUMNS, replace=False)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("schedule_refreshed_at", datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    print(f"Schedule refresh done. {len(to_write)} games rss={_mem()}", flush=True)
+    return {"seasons": years, "games": int(len(to_write))}
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import date
 from threading import Thread
 import os
 import time
@@ -77,10 +78,52 @@ def _ingest_if_empty() -> None:
         LOCK_PATH.unlink(missing_ok=True)
 
 
+def _upcoming_games() -> int:
+    if not DB_PATH.exists():
+        return 0
+    conn = connect()
+    try:
+        today = date.today().isoformat()
+        return int(conn.execute("SELECT COUNT(*) FROM games WHERE gameday >= ?", (today,)).fetchone()[0])
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _refresh_schedule_if_needed() -> None:
+    if not _ingest_complete():
+        return
+    upcoming = _upcoming_games()
+    if upcoming > 0:
+        _log(f"Skip schedule refresh; {upcoming} upcoming games")
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        _log(f"Skip schedule refresh; lock already present at {LOCK_PATH}")
+        return
+    try:
+        from collegegridiron.ingest import refresh_upcoming_schedules
+
+        year = date.today().year
+        _log(f"Refreshing {year} FBS schedule from ESPN")
+        result = refresh_upcoming_schedules([year])
+        _log(f"Schedule refresh finished {result}")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        LOCK_PATH.unlink(missing_ok=True)
+
+
 def _boot_ingest() -> None:
     _log("Boot ingest thread sleeping 8s")
     time.sleep(8)
     _ingest_if_empty()
+    _refresh_schedule_if_needed()
 
 
 @asynccontextmanager
@@ -91,10 +134,10 @@ async def lifespan(_app: FastAPI):
         _log(f"Could not create data dir {DATA_DIR}: {exc}")
     _clear_stale_lock()
     if _ingest_complete():
-        _log(f"No boot ingest needed (ingest_complete=1 players={_player_count()})")
+        _log(f"Boot thread will refresh schedule if needed (players={_player_count()})")
     else:
         _log(f"Starting ingest thread (db={DB_PATH.exists()} players={_player_count()})")
-        Thread(target=_boot_ingest, daemon=True).start()
+    Thread(target=_boot_ingest, daemon=True).start()
     yield
 
 
