@@ -132,7 +132,8 @@ def cwd_remote(ftp: ExplicitFTPTLS, preferred: str) -> str:
             pwd = cwd_parts(ftp, candidate)
             names = list_names(ftp)
             print(f"Tried {candidate} -> pwd={pwd} files={', '.join(names) or '(empty)'}")
-            if candidate in (".", "/") and "public_html" in {n.split("/")[-1] for n in start_names}:
+            if candidate in (".", "/"):
+                print("Skip site-root fallback; collegegridiron must be its own folder")
                 continue
             if candidate == "public_html":
                 inner = list_names(ftp)
