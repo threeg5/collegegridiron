@@ -1,0 +1,12 @@
+DirectoryIndex index.html
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /collegegridiron/
+  Options -MultiViews
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_URI} \.(js|css|png|jpe?g|gif|ico|svg|webp|woff2?|map)$ [NC]
+  RewriteRule ^ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /collegegridiron/index.html [L]
+</IfModule>

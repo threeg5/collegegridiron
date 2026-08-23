@@ -1,0 +1,43 @@
+# Render Blueprint — New → Blueprint → this repo.
+# First boot ingests sportsdataverse CFB parquet into the API disk.
+
+services:
+  - type: web
+    name: collegegridiron-api
+    runtime: python
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: collegegridiron-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CORS_ORIGINS
+        value: https://theprofitengineer.com,https://www.theprofitengineer.com
+
+  - type: web
+    name: collegegridiron-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: collegegridiron-api
+          envVarKey: RENDER_EXTERNAL_URL
