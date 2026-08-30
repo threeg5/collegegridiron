@@ -101,6 +101,104 @@ body {
   font-size: 13px;
 }
 
+.account-link {
+  display: block;
+  margin-top: 8px;
+  color: var(--gold-2);
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.account-link:hover { color: var(--gold); }
+
+.desk-signin {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.desk-signin input {
+  width: 140px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--navy);
+  color: var(--text);
+  font: inherit;
+}
+
+.desk-signin button {
+  padding: 6px 10px;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #1a1204;
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.book-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.book-bar button,
+.book-mini {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: var(--navy);
+  color: var(--gold-2);
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.book-bar a { color: var(--gold-2); }
+
+.log-row {
+  margin: 14px 0 4px;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.log-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-group span {
+  width: 100%;
+  color: var(--gold);
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.expected-board .log-row button {
+  background: var(--gold);
+  color: #1a1204;
+  border-color: var(--gold);
+}
+
 .desks {
   display: flex;
   justify-content: center;

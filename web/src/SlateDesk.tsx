@@ -9,6 +9,12 @@ import {
   type SlateWeek,
   type TeamCard,
   type TeamProfile,
+  type TpeUser,
+  addFollow,
+  addWager,
+  lookupFollow,
+  removeFollow,
+  tpeAccountUrl,
 } from "./api";
 
 function num(value: number | null | undefined, digits = 1) {
@@ -63,6 +69,79 @@ function expectedLabel(matchup: Matchup) {
     return `${matchup.away.team} by ${num(Math.abs(expected.margin))}`;
   }
   return "Pick 'em";
+}
+
+function toBookHalf(value: number) {
+  return Math.round(value * 2) / 2;
+}
+
+function halfLabel(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function spreadLabel(value: number) {
+  if (value === 0) return "PK";
+  return `${value > 0 ? "+" : "-"}${halfLabel(Math.abs(value))}`;
+}
+
+function bookTickets(expected: { total: number; margin: number }) {
+  const total = toBookHalf(expected.total);
+  const homeSpread = -toBookHalf(expected.margin);
+  return {
+    total,
+    homeSpread,
+    awaySpread: -homeSpread,
+    totalLabel: halfLabel(total),
+  };
+}
+
+function TeamFollow({
+  account,
+  team,
+  name,
+}: {
+  account: TpeUser | null;
+  team: string;
+  name: string;
+}) {
+  const [followId, setFollowId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!account) {
+      setFollowId(null);
+      return;
+    }
+    lookupFollow("team", "cfb", team).then((found) => setFollowId(found?.id ?? null));
+  }, [account, team]);
+
+  if (!account) {
+    return (
+      <a className="book-mini" href={tpeAccountUrl("signin")}>
+        Sign in to follow {team}
+      </a>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="book-mini"
+      onClick={() => {
+        if (followId) {
+          void removeFollow(followId).then(() => setFollowId(null));
+          return;
+        }
+        void addFollow({
+          kind: "team",
+          desk: "cfb",
+          subjectId: team,
+          subjectName: name || team,
+        }).then((row) => setFollowId(row.id));
+      }}
+    >
+      {followId ? `Following ${team}` : `Follow ${team}`}
+    </button>
+  );
 }
 
 function StatRow({
@@ -230,12 +309,13 @@ function weekKey(week: SlateWeek) {
   return `${week.season}-${week.season_type}-${week.week}`;
 }
 
-export default function SlateDesk() {
+export default function SlateDesk({ account }: { account: TpeUser | null }) {
   const [data, setData] = useState<SlateResponse | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [matchup, setMatchup] = useState<Matchup | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [bookNote, setBookNote] = useState<string | null>(null);
 
   useEffect(() => {
     fetchSlate()
@@ -272,6 +352,8 @@ export default function SlateDesk() {
 
   if (matchup) {
     const { game, expected, away, home } = matchup;
+    const tickets = expected ? bookTickets(expected) : null;
+    const gameLabel = `${game.away_team} @ ${game.home_team}`;
     return (
       <div className="matchup-desk">
         <button type="button" className="back" onClick={() => setSelected(null)}>
@@ -285,6 +367,11 @@ export default function SlateDesk() {
           <h2>
             {game.away_team} @ {game.home_team}
           </h2>
+          <div className="book-bar">
+            <TeamFollow account={account} team={game.away_team} name={game.away_name} />
+            <TeamFollow account={account} team={game.home_team} name={game.home_name} />
+            {account && <a href={tpeAccountUrl("book")}>My book</a>}
+          </div>
           <p className="sub">
             Rest {game.away_rest ?? "—"}d / {game.home_rest ?? "—"}d
             {game.div_game ? " · Conference" : ""}
@@ -312,6 +399,114 @@ export default function SlateDesk() {
                   <span>{game.home_team}</span>
                   <b>{num(expected.home_points)}</b>
                 </div>
+              </div>
+              <div className="book-bar log-row">
+                {account && tickets ? (
+                  <>
+                    <div className="log-group">
+                      <span>Moneyline</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "moneyline",
+                            side: game.away_team,
+                            line: null,
+                          }).then(() => setBookNote(`Logged ${game.away_team} ML.`));
+                        }}
+                      >
+                        Log {game.away_team}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "moneyline",
+                            side: game.home_team,
+                            line: null,
+                          }).then(() => setBookNote(`Logged ${game.home_team} ML.`));
+                        }}
+                      >
+                        Log {game.home_team}
+                      </button>
+                    </div>
+                    <div className="log-group">
+                      <span>Spread</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "spread",
+                            side: `${game.away_team} ${spreadLabel(tickets.awaySpread)}`,
+                            line: tickets.awaySpread,
+                          }).then(() =>
+                            setBookNote(`Logged ${game.away_team} ${spreadLabel(tickets.awaySpread)}.`),
+                          );
+                        }}
+                      >
+                        Log {game.away_team} {spreadLabel(tickets.awaySpread)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "spread",
+                            side: `${game.home_team} ${spreadLabel(tickets.homeSpread)}`,
+                            line: tickets.homeSpread,
+                          }).then(() =>
+                            setBookNote(`Logged ${game.home_team} ${spreadLabel(tickets.homeSpread)}.`),
+                          );
+                        }}
+                      >
+                        Log {game.home_team} {spreadLabel(tickets.homeSpread)}
+                      </button>
+                    </div>
+                    <div className="log-group">
+                      <span>Total</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "total",
+                            side: `Over ${tickets.totalLabel}`,
+                            line: tickets.total,
+                          }).then(() => setBookNote(`Logged over ${tickets.totalLabel}.`));
+                        }}
+                      >
+                        Log over {tickets.totalLabel}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addWager({
+                            desk: "cfb",
+                            gameLabel,
+                            market: "total",
+                            side: `Under ${tickets.totalLabel}`,
+                            line: tickets.total,
+                          }).then(() => setBookNote(`Logged under ${tickets.totalLabel}.`));
+                        }}
+                      >
+                        Log under {tickets.totalLabel}
+                      </button>
+                    </div>
+                    {bookNote && <span className="note">{bookNote}</span>}
+                  </>
+                ) : (
+                  <a href={tpeAccountUrl("signin")}>
+                    Sign in to log a moneyline, spread, or total
+                  </a>
+                )}
               </div>
               <p className="sub">
                 Last {matchup.lookback_games} regular-season games before this

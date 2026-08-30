@@ -10,6 +10,13 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: 5176,
       strictPort: true,
+      proxy: {
+        "/tpe-api": {
+          target: process.env.VITE_TPE_API_URL || "http://127.0.0.1:8010",
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/tpe-api/, ""),
+        },
+      },
     },
   };
 });
