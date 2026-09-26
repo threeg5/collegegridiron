@@ -24,6 +24,8 @@ services:
         value: "2022,2023,2024,2025"
       - key: CORS_ORIGINS
         value: https://theprofitengineer.com,https://www.theprofitengineer.com
+      - key: TPE_API_URL
+        value: https://wagechecker-api.onrender.com
 
   - type: web
     name: collegegridiron-web

@@ -443,6 +443,12 @@ def get_matchup(conn, game_id: str) -> dict | None:
     since = min((d for d in since_candidates if d), default=None)
     env = league_environment(conn, since, before, "REG")
     expected = expected_from_profiles(home, away, env, bool(game.get("neutral")))
+    from collegegridiron.tpe_context import apply_expected, load_game_context
+
+    ctx = load_game_context(conn, game, home.get("missing") or [], away.get("missing") or [])
+    expected = apply_expected(expected, ctx)
+    from collegegridiron.freshness import injury_freshness
+
     return {
         "game": game,
         "away": away,
@@ -451,4 +457,5 @@ def get_matchup(conn, game_id: str) -> dict | None:
         "expected": expected,
         "lookback_games": TEAM_LOOKBACK_GAMES,
         "recent_games": TEAM_RECENT_GAMES,
+        "injury_freshness": injury_freshness(conn, game),
     }

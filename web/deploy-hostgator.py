@@ -117,43 +117,33 @@ def cwd_parts(ftp: ExplicitFTPTLS, path: str) -> str:
 
 
 def cwd_remote(ftp: ExplicitFTPTLS, preferred: str) -> str:
-    start_names = list_names(ftp)
-    print(f"FTP home listing: {', '.join(start_names) or '(empty)'}")
-
-    candidates = [preferred, *REMOTE_DIR_FALLBACKS]
-    seen: set[str] = set()
+    print(f"FTP home listing: {', '.join(list_names(ftp)) or '(empty)'}")
+    candidates = [
+        preferred,
+        "public_html/website_c7b1cc7d/collegegridiron",
+        *REMOTE_DIR_FALLBACKS,
+    ]
     last_error: Exception | None = None
     for candidate in candidates:
-        if candidate in seen:
+        if not candidate or candidate in (".", "/"):
             continue
-        seen.add(candidate)
         try:
             ftp.cwd("/")
-            pwd = cwd_parts(ftp, candidate)
-            names = list_names(ftp)
-            print(f"Tried {candidate} -> pwd={pwd} files={', '.join(names) or '(empty)'}")
-            if candidate in (".", "/"):
-                print("Skip site-root fallback; collegegridiron must be its own folder")
-                continue
-            if candidate == "public_html":
-                inner = list_names(ftp)
-                nameset = {n.split("/")[-1] for n in inner}
-                if "collegegridiron" not in nameset:
-                    try:
-                        ftp.mkd("collegegridiron")
-                        print("Created public_html/collegegridiron")
-                    except error_perm as exc:
-                        print(f"mkd collegegridiron: {exc}")
-                        continue
-                ftp.cwd("collegegridiron")
-                pwd = ftp.pwd()
-                names = list_names(ftp)
-                print(f"Entered public_html/collegegridiron pwd={pwd} files={', '.join(names) or '(empty)'}")
-                return "public_html/collegegridiron"
+            parts = [part for part in candidate.replace("\\", "/").split("/") if part]
+            for i, part in enumerate(parts):
+                try:
+                    ftp.cwd(part)
+                except error_perm:
+                    if i == len(parts) - 1:
+                        ftp.mkd(part)
+                        ftp.cwd(part)
+                    else:
+                        raise
+            print(f"Entered {candidate} pwd={ftp.pwd()}")
             return candidate
         except error_perm as exc:
             last_error = exc
-            print(f"Cannot cwd {candidate}")
+            print(f"Cannot cwd {candidate}: {exc}")
     fail(f"Could not cwd into a live-site folder. Last error: {last_error}")
 
 

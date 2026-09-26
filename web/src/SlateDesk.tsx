@@ -2,13 +2,21 @@ import { useEffect, useState } from "react";
 import {
   fetchMatchup,
   fetchSlate,
+  formatSnapshot,
+  moveShort,
+  refreshResults,
+  refreshOddsSnapshot,
+  type InjuryFreshness,
   type Matchup,
   type MissingRegular,
+  type PlayerHit,
   type SlateGame,
   type SlateResponse,
   type SlateWeek,
   type TeamCard,
   type TeamProfile,
+  type TpeBoard,
+  type TpeBoardRow,
   type TpeUser,
   addFollow,
   addWager,
@@ -49,7 +57,8 @@ function formatMissing(rows: MissingRegular[]) {
     .map((row) => {
       const pos = row.position ? `${row.position} ` : "";
       const injury = row.injury ? ` · ${row.injury}` : "";
-      return `${pos}${row.player_name} ${row.status ?? "Out"}${injury}`;
+      const when = row.date_modified ? ` · ${formatSnapshot(row.date_modified) ?? ""}` : "";
+      return `${pos}${row.player_name} ${row.status ?? "Out"}${injury}${when}`;
     })
     .join(" · ");
 }
@@ -71,6 +80,7 @@ function expectedLabel(matchup: Matchup) {
   return "Pick 'em";
 }
 
+/** Books only hang totals and spreads on 0 or .5. */
 function toBookHalf(value: number) {
   return Math.round(value * 2) / 2;
 }
@@ -95,75 +105,213 @@ function bookTickets(expected: { total: number; margin: number }) {
   };
 }
 
-function TeamFollow({
-  account,
-  team,
-  name,
+function pct(value: number | null | undefined) {
+  if (value == null) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+function valueLabel(row: TpeBoardRow) {
+  if (row.lean === "juiced") return "Juiced";
+  if (row.ev == null) return "—";
+  if (row.lean === "close" && Math.abs(row.ev) < 0.03) return "Close";
+  const formatted = row.ev.toFixed(2);
+  return row.ev > 0 ? `+${formatted}` : formatted;
+}
+
+function leanLabel(lean: TpeBoardRow["lean"]) {
+  if (lean === "value" || lean === "tpe") return "Value";
+  if (lean === "juiced") return "Juiced";
+  if (lean === "book") return "Price hotter";
+  if (lean === "close") return "Close";
+  return "No TPE yet";
+}
+
+function FreshNote({ fresh }: { fresh?: InjuryFreshness | null }) {
+  if (!fresh) return null;
+  return (
+    <p className={`fresh-note fresh-${fresh.status}`}>
+      {fresh.label}
+      {fresh.note ? ` · ${fresh.note}` : ""}
+    </p>
+  );
+}
+
+function TpeLineBoard({
+  board,
+  expected,
+  game,
+  importError,
+  firstLook,
+  onOpenPlayer,
 }: {
-  account: TpeUser | null;
-  team: string;
-  name: string;
+  board: TpeBoard;
+  expected: Matchup["expected"];
+  game: SlateGame;
+  importError?: string | null;
+  firstLook?: boolean;
+  onOpenPlayer?: (hit: PlayerHit) => void;
 }) {
-  const [followId, setFollowId] = useState<string | null>(null);
+  const firstId = board.game_rows[0]?.id ?? board.prop_rows[0]?.id ?? null;
+  const [selectedId, setSelectedId] = useState<string | null>(firstId);
+  const selected =
+    board.game_rows.find((row) => row.id === selectedId) ??
+    board.prop_rows.find((row) => row.id === selectedId) ??
+    null;
 
-  useEffect(() => {
-    if (!account) {
-      setFollowId(null);
-      return;
-    }
-    lookupFollow("team", "cfb", team).then((found) => setFollowId(found?.id ?? null));
-  }, [account, team]);
+  const tpeMargin =
+    expected == null
+      ? "—"
+      : expected.margin > 0.4
+        ? `${game.home_team} by ${num(expected.margin)}`
+        : expected.margin < -0.4
+          ? `${game.away_team} by ${num(Math.abs(expected.margin))}`
+          : "Pick 'em";
+  const fdHang =
+    board.fanduel_spread != null || board.fanduel_total != null
+      ? [
+          board.fanduel_spread != null
+            ? `${game.home_team} ${board.fanduel_spread > 0 ? "+" : ""}${board.fanduel_spread}`
+            : null,
+          board.fanduel_total != null ? String(board.fanduel_total) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "No snapshot";
+  const totalVs =
+    expected != null && board.fanduel_total != null
+      ? `${num(expected.total)} vs ${board.fanduel_total}`
+      : "—";
 
-  if (!account) {
+  function renderTable(rows: TpeBoardRow[]) {
     return (
-      <a className="book-mini" href={tpeAccountUrl("signin")}>
-        Sign in to follow {team}
-      </a>
+      <table className="tpe-board-table">
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Line</th>
+            <th>FD</th>
+            <th>Imp</th>
+            <th>TPE</th>
+            <th>Val</th>
+            <th>Move</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const active = row.id === selected?.id;
+            return (
+              <tr
+                key={row.id}
+                className={active ? `lean-${row.lean} active` : `lean-${row.lean}`}
+                onClick={() => setSelectedId(row.id)}
+              >
+                <td>{row.market}</td>
+                <td>{row.side}</td>
+                <td>{row.book}</td>
+                <td>{pct(row.implied)}</td>
+                <td>{row.tpe}</td>
+                <td>{valueLabel(row)}</td>
+                <td>{moveShort(row)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     );
   }
 
   return (
-    <button
-      type="button"
-      className="book-mini"
-      onClick={() => {
-        if (followId) {
-          void removeFollow(followId).then(() => setFollowId(null));
-          return;
-        }
-        void addFollow({
-          kind: "team",
-          desk: "cfb",
-          subjectId: team,
-          subjectName: name || team,
-        }).then((row) => setFollowId(row.id));
-      }}
-    >
-      {followId ? `Following ${team}` : `Follow ${team}`}
-    </button>
-  );
-}
-
-function StatRow({
-  label,
-  left,
-  right,
-  signedValue = false,
-  digits = 1,
-}: {
-  label: string;
-  left: number | null | undefined;
-  right: number | null | undefined;
-  signedValue?: boolean;
-  digits?: number;
-}) {
-  const fmt = signedValue ? signed : num;
-  return (
-    <div className="stat-row">
-      <b>{fmt(left, digits)}</b>
-      <span>{label}</span>
-      <b>{fmt(right, digits)}</b>
-    </div>
+    <section className="tpe-board">
+      <div className="tpe-board-head">
+        <div>
+          <p className="kicker">FanDuel vs TPE</p>
+          <p className="sub">
+            {importError
+              ? importError
+              : board.game_rows.length || board.prop_rows.length
+                ? `Click a row for the read.${
+                    formatSnapshot(board.snapshot_at) ? ` FD ${formatSnapshot(board.snapshot_at)}.` : ""
+                  } Rest, weather, and outs are in the number. % is 5,000 sims. Open is the first snapshot on this desk.`
+                : firstLook
+                  ? "No FanDuel lines for this game yet."
+                  : "Sign in, then open this game to load FanDuel."}
+          </p>
+        </div>
+        <p className="tpe-strip">
+          <span>
+            TPE {game.away_team} {expected ? num(expected.away_points) : "—"}–{game.home_team}{" "}
+            {expected ? num(expected.home_points) : "—"}
+          </span>
+          <span>{tpeMargin}</span>
+          <span>FD {fdHang}</span>
+          <span>Tot {totalVs}</span>
+          {board.fanduel_spread_open != null && board.fanduel_spread != null && board.fanduel_spread_open !== board.fanduel_spread && (
+            <span>
+              Open {game.home_team} {board.fanduel_spread_open > 0 ? "+" : ""}
+              {board.fanduel_spread_open}
+            </span>
+          )}
+          {board.fanduel_total_open != null && board.fanduel_total != null && board.fanduel_total_open !== board.fanduel_total && (
+            <span>Open tot {board.fanduel_total_open}</span>
+          )}
+        </p>
+      </div>
+      <FreshNote fresh={board.injury_freshness} />
+      <div className="tpe-board-split">
+        <div className="tpe-table-wrap">
+          {board.game_rows.length > 0 && (
+            <>
+              <p className="board-kicker">Game</p>
+              {renderTable(board.game_rows)}
+            </>
+          )}
+          {board.prop_rows.length > 0 && (
+            <>
+              <p className="board-kicker">Props</p>
+              {renderTable(board.prop_rows)}
+            </>
+          )}
+        </div>
+        <aside className="tpe-read-pane">
+          {selected ? (
+            <>
+              <p className="kicker">
+                {selected.side}
+                <span className={`lean-pill lean-${selected.lean}`}>{leanLabel(selected.lean)}</span>
+              </p>
+              <p className="tpe-read-meta">
+                <span>Book <b>{pct(selected.implied)}</b></span>
+                <span>TPE <b>{selected.tpe}</b></span>
+                <span>Val <b>{valueLabel(selected)}</b></span>
+              </p>
+              {selected.move_label && selected.move_kind !== "flat" && (
+                <p className="sub">{selected.move_label}</p>
+              )}
+              <p className="sub">{selected.sample}</p>
+              <p className="tpe-copy">{selected.read}</p>
+              {selected.player_id && onOpenPlayer && (
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() =>
+                    onOpenPlayer({
+                      player_id: selected.player_id as string,
+                      player_name: selected.player_name || selected.side,
+                      position: selected.position ?? null,
+                      latest_team: selected.latest_team ?? null,
+                    })
+                  }
+                >
+                  Player desk
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="sub">Click a row to read the spot.</p>
+          )}
+        </aside>
+      </div>
+    </section>
   );
 }
 
@@ -185,27 +333,23 @@ function TeamFacts({
       <p className="sub">{sampleRange(overall)}</p>
       <dl className="team-stats">
         <div>
-          <dt>Points for</dt>
-          <dd>{num(overall?.ppg)}</dd>
-        </div>
-        <div>
-          <dt>Points against</dt>
-          <dd>{num(overall?.papg)}</dd>
+          <dt>PF / PA</dt>
+          <dd>
+            {num(overall?.ppg)} / {num(overall?.papg)}
+          </dd>
         </div>
         <div>
           <dt>Margin</dt>
           <dd>{signed(overall?.margin)}</dd>
         </div>
         <div>
-          <dt>Yards</dt>
-          <dd>{num(overall?.yards, 0)}</dd>
+          <dt>Yds / allwd</dt>
+          <dd>
+            {num(overall?.yards, 0)} / {num(overall?.yards_allowed, 0)}
+          </dd>
         </div>
         <div>
-          <dt>Yards allowed</dt>
-          <dd>{num(overall?.yards_allowed, 0)}</dd>
-        </div>
-        <div>
-          <dt>Pass / rush yds</dt>
+          <dt>Pass / rush</dt>
           <dd>
             {num(overall?.pass_yards, 0)} / {num(overall?.rush_yards, 0)}
           </dd>
@@ -215,35 +359,19 @@ function TeamFacts({
           <dd>{signed(overall?.pass_epa, 2)}</dd>
         </div>
         <div>
-          <dt>Rush EPA</dt>
-          <dd>{signed(overall?.rush_epa, 2)}</dd>
-        </div>
-        <div>
-          <dt>Plays</dt>
-          <dd>{num(overall?.plays, 0)}</dd>
-        </div>
-        <div>
-          <dt>Sacks taken / made</dt>
-          <dd>
-            {num(overall?.sacks_suffered, 1)} / {num(overall?.def_sacks, 1)}
-          </dd>
-        </div>
-        <div>
-          <dt>Turnovers</dt>
-          <dd>{num(overall?.turnovers, 1)}</dd>
-        </div>
-        <div>
           <dt>Last 4</dt>
           <dd>
-            {num(recent?.ppg)} / {num(recent?.papg)} ({signed(recent?.margin)})
+            {num(recent?.ppg)} / {num(recent?.papg)}
           </dd>
         </div>
         <div>
-          <dt>{roleLabel} split</dt>
+          <dt>{roleLabel}</dt>
+          <dd>{role ? `${num(role.ppg)} / ${num(role.papg)}` : "—"}</dd>
+        </div>
+        <div>
+          <dt>TO / sacks</dt>
           <dd>
-            {role
-              ? `${num(role.ppg)} / ${num(role.papg)} in ${role.games}`
-              : "—"}
+            {num(overall?.turnovers, 1)} / {num(overall?.def_sacks, 1)}
           </dd>
         </div>
       </dl>
@@ -309,13 +437,82 @@ function weekKey(week: SlateWeek) {
   return `${week.season}-${week.season_type}-${week.week}`;
 }
 
-export default function SlateDesk({ account }: { account: TpeUser | null }) {
+function TeamFollow({
+  account,
+  team,
+  name,
+}: {
+  account: TpeUser | null;
+  team: string;
+  name: string;
+}) {
+  const [followId, setFollowId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!account) {
+      setFollowId(null);
+      return;
+    }
+    lookupFollow("team", "cfb", team).then((found) => setFollowId(found?.id ?? null));
+  }, [account, team]);
+
+  if (!account) {
+    return (
+      <a className="book-mini" href={tpeAccountUrl("signin")}>
+        Sign in to follow {team}
+      </a>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="book-mini"
+      onClick={() => {
+        if (followId) {
+          void removeFollow(followId).then(() => setFollowId(null));
+          return;
+        }
+        void addFollow({
+          kind: "team",
+          desk: "cfb",
+          subjectId: team,
+          subjectName: name || team,
+        }).then((row) => setFollowId(row.id));
+      }}
+    >
+      {followId ? `Following ${team}` : `Follow ${team}`}
+    </button>
+  );
+}
+
+export default function SlateDesk({
+  account,
+  canPullResults = false,
+  onOpenPlayer,
+  fanduel = false,
+  snapshotAt = null,
+  injuryFreshness = null,
+  onSnapshot,
+}: {
+  account: TpeUser | null;
+  canPullResults?: boolean;
+  onOpenPlayer?: (hit: PlayerHit) => void;
+  fanduel?: boolean;
+  snapshotAt?: string | null;
+  injuryFreshness?: InjuryFreshness | null;
+  onSnapshot?: () => void;
+}) {
   const [data, setData] = useState<SlateResponse | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [matchup, setMatchup] = useState<Matchup | null>(null);
   const [loading, setLoading] = useState(true);
+  const [matchupLoading, setMatchupLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bookNote, setBookNote] = useState<string | null>(null);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotNote, setSnapshotNote] = useState<string | null>(null);
+  const [ingestBusy, setIngestBusy] = useState(false);
 
   useEffect(() => {
     fetchSlate()
@@ -330,9 +527,11 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
       return;
     }
     setError(null);
+    setMatchupLoading(true);
     fetchMatchup(selected)
       .then(setMatchup)
-      .catch((err) => setError(err instanceof Error ? err.message : "Matchup failed"));
+      .catch((err) => setError(err instanceof Error ? err.message : "Matchup failed"))
+      .finally(() => setMatchupLoading(false));
   }, [selected]);
 
   function onWeekChange(value: string) {
@@ -346,8 +545,50 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
       .finally(() => setLoading(false));
   }
 
+  function pullResults() {
+    setIngestBusy(true);
+    setSnapshotNote(null);
+    refreshResults(data?.slate?.season)
+      .then((result) => {
+        setSnapshotNote(
+          `Pulled FBS results: ${result.played ?? 0} games with scores, ${result.player_weeks ?? 0} player weeks.`,
+        );
+        onSnapshot?.();
+        const week = data?.slate;
+        return fetchSlate(week?.season, week?.week, week?.season_type || "REG").then(setData);
+      })
+      .catch((err) => setSnapshotNote(err instanceof Error ? err.message : "Ingest failed"))
+      .finally(() => setIngestBusy(false));
+  }
+
+  function pullSnapshot() {
+    setSnapshotBusy(true);
+    setSnapshotNote(null);
+    refreshOddsSnapshot()
+      .then((result) => {
+        const when = formatSnapshot(result.snapshot_at);
+        setSnapshotNote(
+          result.error
+            ? result.error
+            : `Updated ${result.fetched ?? 0} opened game${result.fetched === 1 ? "" : "s"}${
+                when ? ` as of ${when}` : ""
+              }.${result.quota_remaining != null ? ` Odds credits left: ${result.quota_remaining}.` : ""}`,
+        );
+        onSnapshot?.();
+        if (selected) {
+          return fetchMatchup(selected).then(setMatchup);
+        }
+      })
+      .catch((err) => setSnapshotNote(err instanceof Error ? err.message : "Snapshot failed"))
+      .finally(() => setSnapshotBusy(false));
+  }
+
   if (loading && !data) {
     return <p className="note">Loading this week’s slate…</p>;
+  }
+
+  if (selected && matchupLoading) {
+    return <p className="note">Loading matchup…</p>;
   }
 
   if (matchup) {
@@ -356,34 +597,31 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
     const gameLabel = `${game.away_team} @ ${game.home_team}`;
     return (
       <div className="matchup-desk">
-        <button type="button" className="back" onClick={() => setSelected(null)}>
-          ← Back to slate
-        </button>
         <header className="matchup-head">
-          <p className="kicker">
-            {kickoff(game)} · {roofLabel(game)}
-            {game.stadium ? ` · ${game.stadium}` : ""}
-          </p>
-          <h2>
-            {game.away_team} @ {game.home_team}
-          </h2>
+          <button type="button" className="back" onClick={() => setSelected(null)}>
+            ← Slate
+          </button>
+          <div>
+            <h2>
+              {game.away_team} @ {game.home_team}
+            </h2>
+            <p className="sub">
+              {kickoff(game)} · {roofLabel(game)}
+              {game.stadium ? ` · ${game.stadium}` : ""}
+              · Rest {game.away_rest ?? "—"}/{game.home_rest ?? "—"}d
+              {game.div_game ? " · Conference" : ""}
+              {game.is_primetime ? " · Prime" : ""}
+              {game.away_travel && game.away_travel !== "none" ? ` · ${game.away_travel} road` : ""}
+            </p>
+          </div>
           <div className="book-bar">
             <TeamFollow account={account} team={game.away_team} name={game.away_name} />
             <TeamFollow account={account} team={game.home_team} name={game.home_name} />
-            {account && <a href={tpeAccountUrl("book")}>My book</a>}
+            {account && <a href={tpeAccountUrl("book")}>Book</a>}
           </div>
-          <p className="sub">
-            Rest {game.away_rest ?? "—"}d / {game.home_rest ?? "—"}d
-            {game.div_game ? " · Conference" : ""}
-            {game.is_primetime ? " · Primetime" : ""}
-            {game.away_travel && game.away_travel !== "none"
-              ? ` · Away travel ${game.away_travel}`
-              : ""}
-          </p>
         </header>
 
         <section className="expected-board">
-          <p className="kicker">Expected from team numbers</p>
           {expected ? (
             <>
               <div className="expected-scores">
@@ -398,6 +636,32 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
                 <div>
                   <span>{game.home_team}</span>
                   <b>{num(expected.home_points)}</b>
+                </div>
+                <div className="expected-extra">
+                  {matchup.board && (matchup.board.fanduel_spread != null || matchup.board.fanduel_total != null) && (
+                    <p>
+                      FD
+                      {matchup.board.fanduel_spread != null
+                        ? ` ${game.home_team} ${matchup.board.fanduel_spread > 0 ? "+" : ""}${matchup.board.fanduel_spread}`
+                        : ""}
+                      {matchup.board.fanduel_total != null ? ` · ${matchup.board.fanduel_total}` : ""}
+                    </p>
+                  )}
+                  {expected.recent && (
+                    <p>
+                      L4 {game.away_team} {num(expected.recent.away_points)}–{game.home_team}{" "}
+                      {num(expected.recent.home_points)}
+                    </p>
+                  )}
+                  {expected.context_notes && expected.context_notes.length > 0 && (
+                    <p>In TPE: {expected.context_notes.slice(0, 6).join(" · ")}</p>
+                  )}
+                  {matchup.injury_freshness && <FreshNote fresh={matchup.injury_freshness} />}
+                  {game.played && (
+                    <p className="played">
+                      Final {game.away_score}–{game.home_score}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="book-bar log-row">
@@ -508,68 +772,23 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
                   </a>
                 )}
               </div>
-              <p className="sub">
-                Last {matchup.lookback_games} regular-season games before this
-                kickoff. Blend of each team’s scoring and the other side’s points
-                allowed, minus FBS league PPG
-                {expected.hfa
-                  ? `, plus ${num(expected.hfa, 1)} home field from the same window`
-                  : ", no home-field (neutral/overseas)"}
-                . Not a betting line.
-              </p>
-              {expected.recent && (
-                <p className="note">
-                  Last {matchup.recent_games}: {game.away_team} {num(expected.recent.away_points)}{" "}
-                  – {game.home_team} {num(expected.recent.home_points)} (total{" "}
-                  {num(expected.recent.total)})
-                </p>
-              )}
-              {game.played && (
-                <p className="played">
-                  Final {game.away_score}–{game.home_score}
-                </p>
-              )}
             </>
           ) : (
             <p className="sub">Not enough completed games to build an expected score.</p>
           )}
         </section>
 
-        <div className="compare">
-          <StatRow label="PPG" left={away.overall?.ppg} right={home.overall?.ppg} />
-          <StatRow label="PAPG" left={away.overall?.papg} right={home.overall?.papg} />
-          <StatRow
-            label="Margin"
-            left={away.overall?.margin}
-            right={home.overall?.margin}
-            signedValue
+        {fanduel && matchup.board && (
+          <TpeLineBoard
+            key={game.game_id}
+            board={matchup.board}
+            expected={expected}
+            game={game}
+            importError={matchup.props?.import_error}
+            firstLook={matchup.props?.first_look}
+            onOpenPlayer={onOpenPlayer}
           />
-          <StatRow
-            label="Yards"
-            left={away.overall?.yards}
-            right={home.overall?.yards}
-            digits={0}
-          />
-          <StatRow
-            label="Yds allowed"
-            left={away.overall?.yards_allowed}
-            right={home.overall?.yards_allowed}
-            digits={0}
-          />
-          <StatRow
-            label="Pass EPA"
-            left={away.overall?.pass_epa}
-            right={home.overall?.pass_epa}
-            signedValue
-            digits={2}
-          />
-          <StatRow
-            label="Plays"
-            left={away.overall?.plays}
-            right={home.overall?.plays}
-            digits={0}
-          />
-        </div>
+        )}
 
         <div className="matchup-grid">
           <TeamFacts card={away} roleLabel="Away" />
@@ -593,26 +812,48 @@ export default function SlateDesk({ account }: { account: TpeUser | null }) {
           <p className="kicker">This week’s slate</p>
           <h2>{data?.slate?.label ?? "No games loaded"}</h2>
           <p className="sub">
-            Team identity only — no spreads, totals, or moneylines. Click a game
-            for each side’s numbers and an expected score from those numbers.
-            FBS only.
+            Click a game for the expected score and TPE board. Scores refresh
+            from ESPN; opened FanDuel games refresh on the same clock.
+            {fanduel
+              ? formatSnapshot(snapshotAt)
+                ? ` FanDuel as of ${formatSnapshot(snapshotAt)}.`
+                : " FanDuel loads the first time a game is opened."
+              : ""}
           </p>
+          <FreshNote fresh={injuryFreshness} />
+          {snapshotNote && <p className="note">{snapshotNote}</p>}
         </div>
-        {shownWeeks.length > 0 && (
-          <label>
-            Week
-            <select
-              value={data?.slate ? weekKey(data.slate) : ""}
-              onChange={(e) => onWeekChange(e.target.value)}
-            >
-              {shownWeeks.map((week) => (
-                <option key={weekKey(week)} value={weekKey(week)}>
-                  {week.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <div className="slate-tools">
+          {(canPullResults || account?.tier === "owner") && (
+            <div className="snapshot-actions">
+              {canPullResults && (
+                <button type="button" className="text-btn" disabled={ingestBusy} onClick={() => pullResults()}>
+                  {ingestBusy ? "Pulling results…" : "Pull results"}
+                </button>
+              )}
+              {account?.tier === "owner" && fanduel && (
+                <button type="button" className="text-btn" disabled={snapshotBusy} onClick={() => pullSnapshot()}>
+                  {snapshotBusy ? "Refreshing FanDuel…" : "Refresh opened games"}
+                </button>
+              )}
+            </div>
+          )}
+          {shownWeeks.length > 0 && (
+            <label>
+              Week
+              <select
+                value={data?.slate ? weekKey(data.slate) : ""}
+                onChange={(e) => onWeekChange(e.target.value)}
+              >
+                {shownWeeks.map((week) => (
+                  <option key={weekKey(week)} value={weekKey(week)}>
+                    {week.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
 
       {error && <p className="error">{error}</p>}

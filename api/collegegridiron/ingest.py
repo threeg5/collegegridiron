@@ -1280,5 +1280,143 @@ def refresh_upcoming_schedules(years: list[int] | None = None) -> dict:
     return {"seasons": years, "games": int(len(to_write))}
 
 
+TEAM_WEEK_COLUMNS = [
+    "season",
+    "week",
+    "season_type",
+    "game_id",
+    "team",
+    "opponent",
+    "is_home",
+    "completions",
+    "attempts",
+    "passing_yards",
+    "passing_tds",
+    "interceptions",
+    "sacks_suffered",
+    "passing_epa",
+    "carries",
+    "rushing_yards",
+    "rushing_tds",
+    "rushing_epa",
+    "rushing_fumbles_lost",
+    "sack_fumbles_lost",
+    "def_sacks",
+    "def_interceptions",
+]
+MISSING_COLUMNS = [
+    "season",
+    "week",
+    "team",
+    "player_id",
+    "player_name",
+    "position",
+    "side",
+    "snap_pct_recent",
+    "status",
+    "injury",
+]
+
+
+def refresh_results(years: list[int] | None = None) -> dict:
+    """Update this season's scores and weekly stats without wiping other seasons."""
+    years = years or [date.today().year]
+    print(f"Refreshing FBS results for {years} (rss={_mem()})", flush=True)
+    schedule = refresh_upcoming_schedules(years)
+    conn = connect()
+    venues = pd.read_sql_query("SELECT * FROM team_venues", conn)
+    games = pd.read_sql_query("SELECT * FROM games", conn)
+    if venues.empty or games.empty:
+        conn.close()
+        return {"ok": True, "seasons": years, "games": schedule.get("games") or 0, "played": 0, "team_weeks": 0, "player_weeks": 0}
+    set_team_homes(venues.to_dict("records"))
+    team_box = load_years(TEAM_BOX_URLS, years)
+    adv = load_years(ADV_TEAM_URLS, years)
+    team_weeks = prepare_team_weeks(team_box, adv, games, venues)
+    del team_box, adv
+    gc.collect()
+    for year in years:
+        conn.execute("DELETE FROM team_weeks WHERE season = ?", (int(year),))
+    write_frame(conn, "team_weeks", team_weeks, TEAM_WEEK_COLUMNS, replace=False)
+    team_n = 0 if team_weeks is None else len(team_weeks)
+    del team_weeks
+    gc.collect()
+
+    player_n = 0
+    latest_players: dict[str, tuple] = {}
+    for year in years:
+        print(f"Refreshing player stats {year} (rss={_mem()})", flush=True)
+        player_box = load_years(PLAYER_BOX_URLS, [year], columns=PLAYER_BOX_COLUMNS)
+        rosters = load_years(ROSTER_URLS, [year], columns=ROSTER_COLUMNS)
+        player_weeks = prepare_player_weeks(player_box, rosters, games, venues)
+        del player_box, rosters
+        gc.collect()
+        conn.execute("DELETE FROM player_weeks WHERE season = ?", (int(year),))
+        if not player_weeks.empty:
+            for row in player_weeks.itertuples(index=False):
+                latest_players[row.player_id] = (
+                    row.player_id,
+                    row.player_name,
+                    row.position,
+                    row.team,
+                )
+            write_frame(conn, "player_weeks", player_weeks, PLAYER_WEEK_COLUMNS, replace=False)
+            player_n += len(player_weeks)
+        else:
+            conn.commit()
+        del player_weeks
+        gc.collect()
+
+    if latest_players:
+        conn.executemany(
+            """
+            INSERT INTO players(player_id, player_name, position, latest_team)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(player_id) DO UPDATE SET
+              player_name = excluded.player_name,
+              position = excluded.position,
+              latest_team = excluded.latest_team
+            """,
+            list(latest_players.values()),
+        )
+        conn.commit()
+
+    print(f"Refreshing regulars out (rss={_mem()})", flush=True)
+    player_history = pd.read_sql_query(
+        """
+        SELECT player_id, player_name, position, team, season, week,
+               carries, receptions, attempts
+        FROM player_weeks
+        """,
+        conn,
+    )
+    missing = prepare_missing_regulars(player_history, games)
+    write_frame(conn, "missing_regulars", missing, MISSING_COLUMNS, replace=True)
+    del player_history, missing
+    gc.collect()
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    for key in ("ingested_at", "injuries_ingested_at", "results_refreshed_at"):
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, stamp))
+    conn.commit()
+    season_games = games
+    if "season" in games.columns:
+        season_games = games[pd.to_numeric(games["season"], errors="coerce").isin(years)]
+    played = 0
+    if not season_games.empty and "home_score" in season_games.columns:
+        played = int(pd.to_numeric(season_games["home_score"], errors="coerce").notna().sum())
+    conn.close()
+    print(f"Results refresh done. played={played} rss={_mem()}", flush=True)
+    return {
+        "ok": True,
+        "seasons": years,
+        "games": int(schedule.get("games") or 0),
+        "played": played,
+        "team_weeks": team_n,
+        "player_weeks": player_n,
+        "ingested_at": stamp,
+    }
+
+
 if __name__ == "__main__":
     run_ingest()

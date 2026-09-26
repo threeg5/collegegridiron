@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from collegegridiron.config import DB_PATH
+from collegegridiron.config import DB_PATH, fanduel_props_enabled
 from collegegridiron.db import connect
+from collegegridiron.freshness import injury_freshness
+from collegegridiron.live_pull import kick_live_pull, live_status
+from collegegridiron.markets import (
+    delete_market,
+    game_prop_board,
+    import_current_slate,
+    player_card,
+    snapshot_meta,
+    upsert_market,
+)
+from collegegridiron.session import OptionalUser, User
 from collegegridiron.slate import get_matchup, get_slate
+from collegegridiron.tenpage import build_tenpage
+from collegegridiron.tpe_board import build_tpe_board
 from collegegridiron.venues import pacific_teams
 
 router = APIRouter()
@@ -22,6 +36,7 @@ STATS = {
     "receiving_yards": "Rec yds",
     "receiving_tds": "Rec TD",
     "rushing_receiving_yards": "Rush + rec yds",
+    "interceptions": "INTs thrown",
     "fantasy_points": "Fantasy pts",
 }
 
@@ -50,7 +65,17 @@ def health():
 @router.get("/api/meta")
 def meta():
     if not DB_PATH.exists():
-        return {"ingested": False, "stats": STATS}
+        return {
+            "ingested": False,
+            "stats": STATS,
+            "fanduel": fanduel_props_enabled(),
+            "fanduel_snapshot_at": None,
+            "fanduel_snapshot_games": 0,
+            "fanduel_snapshot_markets": 0,
+            "injury_freshness": None,
+            "live_pull": None,
+            "owner_controls": True,
+        }
     conn = connect()
     try:
         kv = {r["key"]: r["value"] for r in rows(conn, "SELECT key, value FROM meta")}
@@ -65,8 +90,22 @@ def meta():
               (SELECT COUNT(*) FROM missing_regulars) AS missing_regulars
             """,
         )
+        snap = snapshot_meta()
+        kick_live_pull(reason="meta")
         ingested = str(kv.get("ingest_complete") or "") == "1" or int((counts or {}).get("games") or 0) > 0
-        return {"ingested": ingested, "stats": STATS, **kv, **(counts or {})}
+        return {
+            "ingested": ingested,
+            "stats": STATS,
+            "fanduel": fanduel_props_enabled(),
+            "fanduel_snapshot_at": snap.get("updated_at"),
+            "fanduel_snapshot_games": snap.get("games"),
+            "fanduel_snapshot_markets": snap.get("markets"),
+            "injury_freshness": injury_freshness(conn),
+            "live_pull": live_status(conn),
+            "owner_controls": True,
+            **kv,
+            **(counts or {}),
+        }
     finally:
         conn.close()
 
@@ -116,6 +155,85 @@ def player_summary(player_id: str):
         return {**player, "default_stat": default_stat, "default_line": default_line, "stats": STATS}
     finally:
         conn.close()
+
+
+class MarketBody(BaseModel):
+    stat: str
+    line: float
+    over_odds: int | None = Field(default=None, alias="overOdds")
+    under_odds: int | None = Field(default=None, alias="underOdds")
+    game_id: str | None = Field(default=None, alias="gameId")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.get("/api/players/{player_id}/card")
+def player_profile_card(player_id: str, user: OptionalUser):
+    conn = connect()
+    try:
+        player = one(
+            conn,
+            "SELECT player_id, player_name, position, latest_team FROM players WHERE player_id = ?",
+            (player_id,),
+        )
+        if not player:
+            raise HTTPException(404, "Player not found")
+        return player_card(conn, player, STATS, first_look=bool(user))
+    finally:
+        conn.close()
+
+
+@router.post("/api/players/{player_id}/markets")
+def save_player_market(player_id: str, body: MarketBody, user: User):
+    if body.stat not in STATS:
+        raise HTTPException(400, f"Unknown stat. Choose from: {', '.join(STATS)}")
+    conn = connect()
+    try:
+        player = one(conn, "SELECT player_id FROM players WHERE player_id = ?", (player_id,))
+        if not player:
+            raise HTTPException(404, "Player not found")
+    finally:
+        conn.close()
+    return upsert_market(
+        player_id,
+        body.game_id,
+        body.stat,
+        body.line,
+        over_odds=body.over_odds,
+        under_odds=body.under_odds,
+        source="manual",
+    )
+
+
+@router.delete("/api/markets/{market_id}")
+def remove_player_market(market_id: str, user: User):
+    if not delete_market(market_id):
+        raise HTTPException(404, "Market not found.")
+    return {"ok": True}
+
+
+@router.post("/api/odds/refresh")
+def refresh_odds(user: User):
+    if user.get("tier") != "owner":
+        raise HTTPException(403, "Owner only.")
+    conn = connect()
+    try:
+        return import_current_slate(conn)
+    finally:
+        conn.close()
+
+
+@router.post("/api/ingest")
+def ingest_results(user: User, season: int | None = None):
+    if user.get("tier") != "owner":
+        raise HTTPException(403, "Owner only.")
+    years = [season] if season else None
+    try:
+        from collegegridiron.ingest import refresh_results
+
+        return refresh_results(years)
+    except Exception as exc:
+        raise HTTPException(500, f"Ingest failed: {exc}") from exc
 
 
 def _streak_clause(column: str, direction: str | None, params: list) -> str:
@@ -354,18 +472,53 @@ def slate(
         return {"slate": None, "weeks": [], "games": []}
     conn = connect()
     try:
+        kick_live_pull(reason="slate")
         return get_slate(conn, season, week, season_type)
     finally:
         conn.close()
 
 
+@router.get("/api/tenpage")
+def tenpage(
+    season: int | None = None,
+    week: int | None = None,
+    season_type: str | None = None,
+):
+    if not DB_PATH.exists():
+        return {
+            "stake": 10,
+            "slate": None,
+            "weeks": [],
+            "games": [],
+            "tickets": 0,
+            "pending": 0,
+            "tpe_wins": 0,
+            "book_wins": 0,
+            "pushes": 0,
+            "total": 0,
+            "graded_total": 0,
+            "method": "",
+        }
+    conn = connect()
+    try:
+        return build_tenpage(conn, STATS, season, week, season_type)
+    finally:
+        conn.close()
+
+
 @router.get("/api/games/{game_id}/matchup")
-def matchup(game_id: str):
+def matchup(game_id: str, user: OptionalUser):
     conn = connect()
     try:
         found = get_matchup(conn, game_id)
         if not found:
             raise HTTPException(404, "Game not found")
+        found["props"] = game_prop_board(conn, found["game"], STATS, first_look=bool(user))
+        found["board"] = (
+            build_tpe_board(conn, found["game"], found.get("expected"), STATS)
+            if fanduel_props_enabled()
+            else None
+        )
         return found
     finally:
         conn.close()

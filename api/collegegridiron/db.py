@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS missing_regulars (
   snap_pct_recent REAL,
   status TEXT,
   injury TEXT,
+  date_modified TEXT,
   PRIMARY KEY (season, week, team, player_id)
 );
 
@@ -185,6 +186,53 @@ CREATE TABLE IF NOT EXISTS team_weeks (
 
 CREATE INDEX IF NOT EXISTS idx_tw_game ON team_weeks(game_id);
 CREATE INDEX IF NOT EXISTS idx_tw_team ON team_weeks(team, season, week);
+
+CREATE TABLE IF NOT EXISTS player_markets (
+  id TEXT PRIMARY KEY,
+  player_id TEXT NOT NULL,
+  game_id TEXT,
+  book TEXT NOT NULL DEFAULT 'FanDuel',
+  stat TEXT NOT NULL,
+  line REAL NOT NULL,
+  over_odds INTEGER,
+  under_odds INTEGER,
+  open_line REAL,
+  open_over_odds INTEGER,
+  open_under_odds INTEGER,
+  opened_at TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (player_id, game_id, book, stat)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_markets_player ON player_markets(player_id, game_id);
+
+CREATE TABLE IF NOT EXISTS game_markets (
+  id TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL,
+  book TEXT NOT NULL DEFAULT 'FanDuel',
+  market TEXT NOT NULL,
+  home_line REAL,
+  away_line REAL,
+  home_odds INTEGER,
+  away_odds INTEGER,
+  over_odds INTEGER,
+  under_odds INTEGER,
+  open_home_line REAL,
+  open_away_line REAL,
+  open_home_odds INTEGER,
+  open_away_odds INTEGER,
+  open_over_odds INTEGER,
+  open_under_odds INTEGER,
+  opened_at TEXT,
+  source TEXT NOT NULL DEFAULT 'odds_api',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (game_id, book, market)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_markets_game ON game_markets(game_id);
 """
 
 
@@ -221,8 +269,18 @@ def reset_schema(conn: sqlite3.Connection) -> None:
     init_db(conn)
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    if "date_modified" not in _table_columns(conn, "missing_regulars"):
+        conn.execute("ALTER TABLE missing_regulars ADD COLUMN date_modified TEXT")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
 
 

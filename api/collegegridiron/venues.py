@@ -6,6 +6,7 @@ import re
 # Populated from team_venues at ingest and on DB connect.
 TEAM_HOMES: dict[str, tuple[float, float, int]] = {}
 TEAM_NAMES: dict[str, str] = {}
+TEAM_SCHOOLS: dict[str, str] = {}
 TEAM_ELEVATION: dict[str, float] = {}
 PACIFIC_TEAMS: set[str] = set()
 ALTITUDE_TEAMS: set[str] = set()
@@ -47,6 +48,7 @@ def tz_offset(zone: str | None, fallback: int = -5) -> int:
 def set_team_homes(rows: list[dict]) -> None:
     TEAM_HOMES.clear()
     TEAM_NAMES.clear()
+    TEAM_SCHOOLS.clear()
     TEAM_ELEVATION.clear()
     PACIFIC_TEAMS.clear()
     ALTITUDE_TEAMS.clear()
@@ -54,9 +56,10 @@ def set_team_homes(rows: list[dict]) -> None:
         abbr = str(row.get("team") or "").strip()
         if not abbr:
             continue
-        school = row.get("school") or abbr
+        school = str(row.get("school") or abbr).strip()
         mascot = row.get("mascot") or ""
         TEAM_NAMES[abbr] = f"{school} {mascot}".strip()
+        TEAM_SCHOOLS[abbr] = school
         lat = row.get("lat")
         lon = row.get("lon")
         tz = row.get("tz_offset")

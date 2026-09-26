@@ -1,20 +1,26 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchPlayer,
+  fetchPlayerCard,
   fetchProp,
+  formatSnapshot,
+  type InjuryFreshness,
   searchPlayers,
-  type Follow,
+  type FanDuelMarket,
   type Meta,
   type MissingRegular,
+  type PlayerCard,
   type PlayerHit,
   type PlayerSummary,
   type PropQuery,
   type PropResult,
+  type Follow,
   type TpeUser,
   addFollow,
   addSpot,
   addWager,
   lookupFollow,
+  patchMe,
   removeFollow,
   tpeAccountUrl,
 } from "./api";
@@ -54,14 +60,81 @@ function formatMissing(rows: MissingRegular[]) {
     .map((row) => {
       const pos = row.position ? `${row.position} ` : "";
       const injury = row.injury ? ` · ${row.injury}` : "";
-      return `${pos}${row.player_name} ${row.status ?? "Out"}${injury}`;
+      const when = row.date_modified ? ` · ${formatSnapshot(row.date_modified) ?? ""}` : "";
+      return `${pos}${row.player_name} ${row.status ?? "Out"}${injury}${when}`;
     })
     .join(" · ");
 }
 
-function pct(value: number | null) {
+function pct(value: number | null | undefined) {
   if (value == null) return "—";
   return `${Math.round(value * 100)}%`;
+}
+
+function formatOdds(odds: number | null | undefined) {
+  if (odds == null) return "—";
+  return odds > 0 ? `+${odds}` : String(odds);
+}
+
+function tpeRead(result: PropResult, market: FanDuelMarket | null) {
+  if (!result.sample_size) {
+    return "No matching games with the current filters. Loosen the spot or keep this as a sketch.";
+  }
+  const parts = [
+    `In ${result.sample_size} matching games he cleared ${result.line} ${result.hits} times (${pct(result.hit_rate)}).`,
+  ];
+  if (result.mean != null) {
+    parts.push(`Mean ${result.mean}, median ${result.median ?? "—"}.`);
+  }
+  const implied = market?.over_implied;
+  if (implied == null) {
+    parts.push("Add FanDuel odds on the card to compare this rate to the market price.");
+  } else {
+    const gap = (result.hit_rate ?? 0) - implied;
+    parts.push(`FanDuel prices the over around ${pct(implied)} (juice still in).`);
+    if (Math.abs(gap) < 0.03) {
+      parts.push("History and the price are close — the spot still has to earn the bet.");
+    } else if (gap > 0) {
+      parts.push(
+        `This sample has cleared more often than the price implies (${pct(gap)} gap). That is a question, not a lock.`,
+      );
+    } else {
+      parts.push(`The price is hotter than this sample (${pct(-gap)} the other way).`);
+    }
+  }
+  if (
+    market?.open_line != null &&
+    market.line != null &&
+    market.open_line !== market.line
+  ) {
+    parts.push(`First snapshot was ${market.open_line}; now ${market.line}.`);
+  }
+  parts.push("TPE helps you read the spot. You still make the price decision.");
+  return parts.join(" ");
+}
+
+function FreshNote({ fresh }: { fresh?: InjuryFreshness | null }) {
+  if (!fresh) return null;
+  return (
+    <p className={`fresh-note fresh-${fresh.status}`}>
+      {fresh.label}
+      {fresh.note ? ` · ${fresh.note}` : ""}
+    </p>
+  );
+}
+
+function pickImportedMarket(profile: PlayerCard | null, restore?: { stat?: string }) {
+  if (!profile?.markets.length) return null;
+  const order = [
+    ...(restore?.stat ? [restore.stat] : []),
+    ...profile.suggestions,
+    ...profile.markets.map((market) => market.stat),
+  ];
+  for (const stat of order) {
+    const found = profile.markets.find((market) => market.stat === stat);
+    if (found) return found;
+  }
+  return profile.markets[0];
 }
 
 function travelLabel(game: {
@@ -76,6 +149,18 @@ function travelLabel(game: {
   }
   if (game.tz_change) bits.push(`${game.tz_change}tz`);
   return bits.join(" · ");
+}
+
+function practiceLabel(status: string | null) {
+  if (status === "dnp") return "DNP";
+  if (status === "limited") return "Limited";
+  if (status === "full") return "Full";
+  return "—";
+}
+
+function practiceClass(status: string | null) {
+  if (status === "dnp" || status === "limited" || status === "full") return `chip ${status}`;
+  return "chip";
 }
 
 function spotTags(game: PropResult["games"][number]) {
@@ -97,9 +182,11 @@ function spotTags(game: PropResult["games"][number]) {
 export default function PlayerDesk({
   meta,
   account,
+  focusPlayer,
 }: {
   meta: Meta | null;
   account: TpeUser | null;
+  focusPlayer?: PlayerHit | null;
 }) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlayerHit[]>([]);
@@ -108,9 +195,12 @@ export default function PlayerDesk({
   const [result, setResult] = useState<PropResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const restored = useRef(false);
   const [follow, setFollow] = useState<Follow | null>(null);
   const [bookNote, setBookNote] = useState<string | null>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
+  const [card, setCard] = useState<PlayerCard | null>(null);
+  const [selectedMarket, setSelectedMarket] = useState<FanDuelMarket | null>(null);
 
   useEffect(() => {
     if (query.trim().length < 2) {
@@ -135,6 +225,77 @@ export default function PlayerDesk({
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  function rememberSearch(summary: PlayerSummary, query: PropQuery) {
+    if (!account) return;
+    void patchMe({
+      lastDesk: "cfb",
+      lastSearch: {
+        desk: "cfb",
+        player_id: summary.player_id,
+        player_name: summary.player_name,
+        position: summary.position,
+        latest_team: summary.latest_team,
+        stat: query.stat,
+        line: Number(query.line),
+      },
+    }).catch(() => undefined);
+  }
+
+  async function selectPlayer(hit: PlayerHit, restore?: { stat?: string; line?: number }) {
+    setQuery(hit.player_name);
+    setHits([]);
+    setError(null);
+    setSelectedMarket(null);
+    const [summary, profile] = await Promise.all([
+      fetchPlayer(hit.player_id),
+      meta?.fanduel ? fetchPlayerCard(hit.player_id).catch(() => null) : Promise.resolve(null),
+    ]);
+    setPlayer(summary);
+    setCard(profile);
+    const imported = pickImportedMarket(profile, restore);
+    const next = {
+      ...EMPTY_QUERY,
+      stat: imported?.stat || restore?.stat || summary.default_stat,
+      line: imported?.line ?? restore?.line ?? summary.default_line,
+    };
+    if (profile?.situation) {
+      next.home = profile.situation.is_home ? "1" : "0";
+    }
+    setSelectedMarket(imported);
+    setFilters(next);
+    setLoading(true);
+    try {
+      setResult(await fetchProp(summary.player_id, next));
+      rememberSearch(summary, next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Lookup failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!focusPlayer?.player_id) return;
+    restored.current = true;
+    void selectPlayer(focusPlayer);
+  }, [focusPlayer?.player_id]);
+
+  useEffect(() => {
+    const saved = account?.last_search;
+    if (restored.current || !saved?.player_id || !saved.player_name) return;
+    if (saved.desk && saved.desk !== "cfb") return;
+    restored.current = true;
+    void selectPlayer(
+      {
+        player_id: saved.player_id,
+        player_name: saved.player_name,
+        position: saved.position ?? null,
+        latest_team: saved.latest_team ?? null,
+      },
+      { stat: saved.stat, line: saved.line },
+    );
+  }, [account]);
+
   useEffect(() => {
     if (!account || !player) {
       setFollow(null);
@@ -143,35 +304,35 @@ export default function PlayerDesk({
     lookupFollow("athlete", "cfb", player.player_id).then(setFollow);
   }, [account, player?.player_id]);
 
-  async function selectPlayer(hit: PlayerHit) {
-    setQuery(hit.player_name);
-    setHits([]);
-    setError(null);
-    const summary = await fetchPlayer(hit.player_id);
-    setPlayer(summary);
-    const next = {
-      ...EMPTY_QUERY,
-      stat: summary.default_stat,
-      line: summary.default_line,
-    };
-    setFilters(next);
-    setLoading(true);
-    try {
-      setResult(await fetchProp(summary.player_id, next));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Lookup failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (!player) return;
+    if (selectedMarket && selectedMarket.stat === filters.stat && selectedMarket.line !== filters.line) {
+      setSelectedMarket({ ...selectedMarket, line: filters.line });
+    } else if (selectedMarket && selectedMarket.stat !== filters.stat) {
+      setSelectedMarket(importedMarkets.find((market) => market.stat === filters.stat) ?? null);
+    }
+    await runLookup(player, filters);
+  }
+
+  const stats = player?.stats ?? meta?.stats ?? {};
+  const importedMarkets = useMemo(() => {
+    const preferred = card?.suggestions ?? [];
+    const rest = (card?.markets ?? []).filter((market) => !preferred.includes(market.stat));
+    const ordered: FanDuelMarket[] = [];
+    for (const stat of preferred) {
+      const found = card?.markets.find((market) => market.stat === stat);
+      if (found) ordered.push(found);
+    }
+    return [...ordered, ...rest];
+  }, [card]);
+
+  async function runLookup(summary: PlayerSummary, query: PropQuery) {
     setLoading(true);
     setError(null);
     try {
-      setResult(await fetchProp(player.player_id, filters));
+      setResult(await fetchProp(summary.player_id, query));
+      rememberSearch(summary, query);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Lookup failed");
     } finally {
@@ -179,7 +340,31 @@ export default function PlayerDesk({
     }
   }
 
-  const stats = player?.stats ?? meta?.stats ?? {};
+  async function useMarket(market: FanDuelMarket) {
+    if (!player) return;
+    const next: PropQuery = {
+      ...filters,
+      stat: market.stat,
+      line: market.line,
+      home: card?.situation ? (card.situation.is_home ? "1" : "0") : filters.home,
+    };
+    setSelectedMarket(market);
+    setFilters(next);
+    await runLookup(player, next);
+  }
+
+  function applyWeekSpot() {
+    if (!player || !card?.situation) return;
+    const next: PropQuery = {
+      ...filters,
+      home: card.situation.is_home ? "1" : "0",
+      roof: card.situation.roof_group ?? "",
+      primetime: card.situation.primetime ? "1" : "0",
+    };
+    setFilters(next);
+    void runLookup(player, next);
+  }
+
   const sampleNote = useMemo(() => {
     if (!result) return null;
     if (result.sample_size < 8) return "Small sample — treat as a sketch, not a rate.";
@@ -193,7 +378,7 @@ export default function PlayerDesk({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search a player — Jeanty, Hunter, Klubnik…"
+          placeholder="Search a player — CMC, Mahomes, Lamb…"
           autoFocus
         />
         {hits.length > 0 && (
@@ -264,6 +449,8 @@ export default function PlayerDesk({
                         market: "prop",
                         side: `${player.player_name} over ${filters.line}`,
                         line: Number(filters.line),
+                        book: selectedMarket?.book ?? "FanDuel",
+                        odds: selectedMarket?.over_odds ?? null,
                       }).then(() => setBookNote(`Logged over ${filters.line}.`));
                     }}
                   >
@@ -279,6 +466,8 @@ export default function PlayerDesk({
                         market: "prop",
                         side: `${player.player_name} under ${filters.line}`,
                         line: Number(filters.line),
+                        book: selectedMarket?.book ?? "FanDuel",
+                        odds: selectedMarket?.under_odds ?? null,
                       }).then(() => setBookNote(`Logged under ${filters.line}.`));
                     }}
                   >
@@ -293,6 +482,103 @@ export default function PlayerDesk({
             <a href={tpeAccountUrl("signin")}>Sign in to follow and save spots</a>
           )}
         </div>
+      )}
+
+      {player && card && meta?.fanduel && (
+        <section className="profile-card">
+          <div className="week-strip">
+            <p className="kicker">{card.slate?.label ?? "This week"}</p>
+            {card.game && card.situation ? (
+              <>
+                <h2>
+                  {player.latest_team} {card.situation.is_home ? "vs" : "@"} {card.situation.opponent}
+                </h2>
+                <p className="week-meta">
+                  {card.game.weekday ?? ""} {card.game.gameday ?? ""}
+                  {card.game.gametime ? ` · ${card.game.gametime}` : ""}
+                  {card.situation.stadium ? ` · ${card.situation.stadium}` : ""}
+                </p>
+                <div className="stat-pills">
+                  <span className="pill">
+                    Spot <b>{card.situation.is_home ? "Home" : "Away"}</b>
+                  </span>
+                  <span className="pill">
+                    Rest <b>{card.situation.rest_days ?? "—"}d</b>
+                  </span>
+                  <span className="pill">
+                    Roof <b>{card.situation.roof ?? "—"}</b>
+                  </span>
+                  {card.situation.wind != null && (
+                    <span className="pill">
+                      Wind <b>{card.situation.wind} mph</b>
+                    </span>
+                  )}
+                  {card.situation.primetime ? (
+                    <span className="pill">
+                      Window <b>Prime</b>
+                    </span>
+                  ) : null}
+                </div>
+                <button type="button" className="text-btn" onClick={applyWeekSpot}>
+                  Match this week’s spot
+                </button>
+              </>
+            ) : (
+              <p className="sub">
+                {player.latest_team
+                  ? `${player.latest_team} is on a bye or not on this slate. Historical TPE still runs.`
+                  : "No team listed for this player on the current slate."}
+              </p>
+            )}
+          </div>
+
+          <div className="fd-card">
+            <p className="kicker">FanDuel props</p>
+            <p className="sub">
+              {card.import_error
+                ? card.import_error
+                : importedMarkets.length
+                  ? `FanDuel for this game. Click a prop to load the TPE read.${
+                      formatSnapshot(card.snapshot_at) ? ` As of ${formatSnapshot(card.snapshot_at)}.` : ""
+                    }`
+                  : card.first_look
+                    ? "No FanDuel player props for this game yet."
+                    : "Sign in, then open this game to load FanDuel."}
+            </p>
+            <FreshNote fresh={card.injury_freshness} />
+            <div className="fd-grid">
+              {importedMarkets.map((market) => {
+                const active = selectedMarket?.stat === market.stat;
+                return (
+                  <button
+                    key={market.stat}
+                    type="button"
+                    className={active ? "fd-pick active" : "fd-pick"}
+                    onClick={() => void useMarket(market)}
+                  >
+                    <strong>{market.stat_label}</strong>
+                    <span className="fd-line">
+                      {market.line}
+                      {market.open_line != null && market.open_line !== market.line && (
+                        <small className="fd-open">open {market.open_line}</small>
+                      )}
+                    </span>
+                    <span className="fd-odds">
+                      {formatOdds(market.over_odds)} / {formatOdds(market.under_odds)}
+                      {market.open_over_odds != null &&
+                        market.open_over_odds !== market.over_odds && (
+                          <small className="fd-open">
+                            {" "}
+                            was {formatOdds(market.open_over_odds)}
+                          </small>
+                        )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
       )}
 
       {player && (
@@ -417,9 +703,21 @@ export default function PlayerDesk({
             </select>
           </label>
           <label>
-            Usage note
-            <select disabled>
-              <option>No official injury report</option>
+            Practice report
+            <select
+              value={filters.practice}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  practice: e.target.value as PropQuery["practice"],
+                })
+              }
+            >
+              <option value="">Any</option>
+              <option value="full">Full / not listed</option>
+              <option value="limited">Limited</option>
+              <option value="dnp">DNP</option>
+              <option value="listed">Limited or DNP</option>
             </select>
           </label>
           <label>
@@ -494,7 +792,7 @@ export default function PlayerDesk({
               }
             >
               <option value="">Any</option>
-              <option value="1">Altitude (4,000+ ft)</option>
+              <option value="1">Denver / altitude</option>
             </select>
           </label>
           <label>
@@ -524,7 +822,7 @@ export default function PlayerDesk({
               }}
             >
               <option value="">None</option>
-              <option value="early">West Coast early window</option>
+              <option value="early">West Coast 1pm ET</option>
               <option value="road">2nd+ straight road</option>
             </select>
           </label>
@@ -538,6 +836,7 @@ export default function PlayerDesk({
 
       {result && (
         <>
+          <div className="player-result">
           <section className="hero">
             <div className="scoreboard">
               <p className="kicker">
@@ -566,6 +865,27 @@ export default function PlayerDesk({
             </div>
           </section>
 
+          <section className="tpe-banner">
+            <p className="kicker">TPE read</p>
+            {selectedMarket ? (
+              <p className="tpe-market">
+                {selectedMarket.book} · {selectedMarket.stat_label} {selectedMarket.line}
+                {selectedMarket.open_line != null && selectedMarket.open_line !== selectedMarket.line
+                  ? ` (open ${selectedMarket.open_line})`
+                  : ""}{" "}
+                · over {formatOdds(selectedMarket.over_odds)} ({pct(selectedMarket.over_implied)}) · under{" "}
+                {formatOdds(selectedMarket.under_odds)} ({pct(selectedMarket.under_implied)})
+              </p>
+            ) : (
+              <p className="tpe-market">
+                Historical {result.stat_label} over {result.line}
+                {meta?.fanduel ? ". Select a FanDuel prop on the card to price it." : "."}
+              </p>
+            )}
+            <p className="tpe-copy">{tpeRead(result, selectedMarket)}</p>
+          </section>
+          </div>
+
           <div className="table-wrap">
             <table>
               <thead>
@@ -573,7 +893,7 @@ export default function PlayerDesk({
                   <th>When</th>
                   <th>Spot</th>
                   <th>Travel</th>
-                  <th>Spot type</th>
+                  <th>Practice</th>
                   <th>Rest</th>
                   <th>Wx</th>
                   <th>Context</th>
@@ -598,7 +918,9 @@ export default function PlayerDesk({
                     </td>
                     <td>{travelLabel(game)}</td>
                     <td>
-                      {game.div_game ? "Conf" : "Non-conf"}
+                      <span className={practiceClass(game.practice_status)}>
+                        {practiceLabel(game.practice_status)}
+                      </span>
                     </td>
                     <td>{game.rest_days ?? "—"}d</td>
                     <td>
@@ -629,10 +951,9 @@ export default function PlayerDesk({
         <section className="empty">
           <h2>Call a player</h2>
           <p>
-            Search a name, set a line, then see how often it hit in comparable
-            FBS games. Travel, rest, conference, and regulars who did not play
-            sit on each row so you can judge the spot — this desk does not pick
-            the bet.
+            {meta?.fanduel
+              ? "Search a name or open a player from this week’s game. FanDuel props import with the selection, then TPE compares that line to similar spots. This desk does not pick the bet."
+              : "Search a name, set a line, then see how often it hit in comparable games. Travel, rest, weather, and missing regulars sit on each row. This desk does not pick the bet."}
           </p>
         </section>
       )}

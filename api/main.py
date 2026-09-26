@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from collegegridiron.config import DATA_DIR, DB_PATH, cors_origins, ingest_years
 from collegegridiron.db import connect
+from collegegridiron.live_pull import kick_live_pull
 from collegegridiron.routes import router
 
 LOCK_PATH = DATA_DIR / "ingest.lock"
@@ -138,6 +139,8 @@ async def lifespan(_app: FastAPI):
     else:
         _log(f"Starting ingest thread (db={DB_PATH.exists()} players={_player_count()})")
     Thread(target=_boot_ingest, daemon=True).start()
+    if _ingest_complete():
+        kick_live_pull(reason="boot")
     yield
 
 
