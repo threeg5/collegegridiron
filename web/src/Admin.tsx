@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  createAdminUser,
   fetchAdminUsers,
   patchAdminUser,
   type AdminUser,
@@ -26,6 +27,10 @@ function deskLabel(id: string | null) {
   return DESK_LABEL[id] ?? id.toUpperCase();
 }
 
+function loginHandle(person: Pick<AdminUser, "email" | "username">) {
+  return person.username || person.email || "—";
+}
+
 function createdLabel(iso: string) {
   return iso.slice(0, 10);
 }
@@ -47,6 +52,11 @@ export default function AdminDesk({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentTier, setAgentTier] = useState<Tier>("amateur");
+  const [creating, setCreating] = useState(false);
 
   async function load() {
     const roster = await fetchAdminUsers();
@@ -86,7 +96,8 @@ export default function AdminDesk({
       if (!needle) return true;
       return (
         person.display_name.toLowerCase().includes(needle) ||
-        person.email.toLowerCase().includes(needle)
+        (person.email ?? "").toLowerCase().includes(needle) ||
+        (person.username ?? "").toLowerCase().includes(needle)
       );
     });
   }, [people, query, filter]);
@@ -123,6 +134,31 @@ export default function AdminDesk({
     await save(person, { displayName });
   }
 
+  async function onCreate(event: FormEvent) {
+    event.preventDefault();
+    setCreating(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await createAdminUser({
+        username,
+        password,
+        displayName: agentName.trim() || undefined,
+        tier: agentTier,
+      });
+      setUsername("");
+      setPassword("");
+      setAgentName("");
+      setAgentTier("amateur");
+      await load();
+      setNotice(`${next.display_name} can sign in as ${next.username}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create login.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   if (viewer.tier !== "owner") {
     return (
       <section className="admin-desk">
@@ -141,6 +177,7 @@ export default function AdminDesk({
           <h2>Accounts</h2>
           <p className="lede">
             Every TPE login. Change the name or the Amateur / Player / Owner type. Keep at least one owner.
+            Agent logins are username and password only — no email.
           </p>
         </div>
       </div>
@@ -165,18 +202,62 @@ export default function AdminDesk({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Name or email"
+            placeholder="Name, email, or username"
           />
         </label>
       </div>
       {error && <p className="error">{error}</p>}
       {notice && <p className="ok">{notice}</p>}
+      <form className="admin-create" onSubmit={(event) => void onCreate(event)}>
+        <p className="admin-create-label">Agent login</p>
+        <input
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Username"
+          autoComplete="off"
+          required
+          minLength={3}
+          maxLength={32}
+          aria-label="Username"
+        />
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          autoComplete="new-password"
+          required
+          minLength={8}
+          aria-label="Password"
+        />
+        <input
+          value={agentName}
+          onChange={(e) => setAgentName(e.target.value)}
+          placeholder="Name (optional)"
+          maxLength={40}
+          aria-label="Display name"
+        />
+        <select
+          value={agentTier}
+          onChange={(e) => setAgentTier(e.target.value as Tier)}
+          aria-label="Account type"
+        >
+          {TIERS.filter((tier) => tier !== "owner").map((tier) => (
+            <option key={tier} value={tier}>
+              {TIER_LABEL[tier]}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={creating}>
+          {creating ? "Creating…" : "Create login"}
+        </button>
+      </form>
       <div className="admin-table-wrap">
         <table className="admin-table">
           <thead>
             <tr>
               <th>Name</th>
-              <th>Email</th>
+              <th>Login</th>
               <th>Account</th>
               <th>Last desk</th>
               <th>Created</th>
@@ -191,7 +272,7 @@ export default function AdminDesk({
                       value={names[person.id] ?? person.display_name}
                       onChange={(e) => setNames((current) => ({ ...current, [person.id]: e.target.value }))}
                       maxLength={40}
-                      aria-label={`Name for ${person.email}`}
+                      aria-label={`Name for ${loginHandle(person)}`}
                       disabled={busyId === person.id}
                     />
                     <button
@@ -206,7 +287,7 @@ export default function AdminDesk({
                     {person.id === viewer.id && <span className="admin-you">You</span>}
                   </form>
                 </td>
-                <td>{person.email}</td>
+                <td>{loginHandle(person)}</td>
                 <td>
                   <select
                     value={person.tier}

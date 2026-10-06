@@ -42,7 +42,9 @@ function DeskSignIn({ onSignedIn }: { onSignedIn: (user: TpeUser) => void }) {
       onSignedIn(
         mode === "signup"
           ? await signup({ email, password, displayName, tier })
-          : await login({ email, password }),
+          : await login(
+              email.includes("@") ? { email, password } : { username: email, password },
+            ),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed.");
@@ -79,11 +81,11 @@ function DeskSignIn({ onSignedIn }: { onSignedIn: (user: TpeUser) => void }) {
         </>
       )}
       <input
-        type="email"
+        type={mode === "signup" ? "email" : "text"}
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        placeholder="Email"
-        autoComplete="email"
+        placeholder={mode === "signup" ? "Email" : "Email or username"}
+        autoComplete={mode === "signup" ? "email" : "username"}
         required
       />
       <input

@@ -574,6 +574,55 @@ body {
   text-transform: uppercase;
 }
 
+.admin-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: rgba(10, 18, 32, 0.55);
+}
+
+.admin-create-label {
+  flex: 1 0 100%;
+  margin: 0 0 2px;
+  color: var(--gold-2);
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.admin-create input,
+.admin-create select {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--navy);
+  color: var(--text);
+  font: inherit;
+}
+
+.admin-create button {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: var(--gold);
+  color: #1a1204;
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.admin-create button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .stat-pills {
   display: flex;
   flex-wrap: wrap;
