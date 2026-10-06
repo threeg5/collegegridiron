@@ -177,7 +177,7 @@ export default function AdminDesk({
           <h2>Accounts</h2>
           <p className="lede">
             Every TPE login. Change the name or the Amateur / Player / Owner type. Keep at least one owner.
-            Agent logins are username and password only — no email.
+            Agent logins are username and password only — no email. Pick Owner when the agent needs full access.
           </p>
         </div>
       </div>
@@ -242,7 +242,7 @@ export default function AdminDesk({
           onChange={(e) => setAgentTier(e.target.value as Tier)}
           aria-label="Account type"
         >
-          {TIERS.filter((tier) => tier !== "owner").map((tier) => (
+          {TIERS.map((tier) => (
             <option key={tier} value={tier}>
               {TIER_LABEL[tier]}
             </option>
