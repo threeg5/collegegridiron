@@ -3,6 +3,7 @@ import {
   createAdminUser,
   fetchAdminUsers,
   patchAdminUser,
+  setAdminPassword,
   type AdminUser,
   type Tier,
   type TpeUser,
@@ -57,6 +58,7 @@ export default function AdminDesk({
   const [agentName, setAgentName] = useState("");
   const [agentTier, setAgentTier] = useState<Tier>("amateur");
   const [creating, setCreating] = useState(false);
+  const [passwords, setPasswords] = useState<Record<string, string>>({});
 
   async function load() {
     const roster = await fetchAdminUsers();
@@ -159,6 +161,24 @@ export default function AdminDesk({
     }
   }
 
+  async function onPassword(event: FormEvent, person: AdminUser) {
+    event.preventDefault();
+    const nextPassword = (passwords[person.id] ?? "").trim();
+    if (nextPassword.length < 8) return;
+    setBusyId(person.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await setAdminPassword(person.id, nextPassword);
+      setPasswords((current) => ({ ...current, [person.id]: "" }));
+      setNotice(`Password set for ${person.username || person.display_name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not set password.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (viewer.tier !== "owner") {
     return (
       <section className="admin-desk">
@@ -258,6 +278,7 @@ export default function AdminDesk({
             <tr>
               <th>Name</th>
               <th>Login</th>
+              <th>Password</th>
               <th>Account</th>
               <th>Last desk</th>
               <th>Created</th>
@@ -289,6 +310,29 @@ export default function AdminDesk({
                 </td>
                 <td>{loginHandle(person)}</td>
                 <td>
+                  {person.username ? (
+                    <form className="admin-name" onSubmit={(event) => void onPassword(event, person)}>
+                      <input
+                        type="password"
+                        value={passwords[person.id] ?? ""}
+                        onChange={(e) =>
+                          setPasswords((current) => ({ ...current, [person.id]: e.target.value }))
+                        }
+                        placeholder="New password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        aria-label={`New password for ${person.username}`}
+                        disabled={busyId === person.id}
+                      />
+                      <button type="submit" disabled={busyId === person.id || (passwords[person.id] ?? "").trim().length < 8}>
+                        Set
+                      </button>
+                    </form>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td>
                   <select
                     value={person.tier}
                     aria-label={`Account type for ${person.display_name}`}
@@ -308,7 +352,7 @@ export default function AdminDesk({
             ))}
             {!shown.length && (
               <tr>
-                <td colSpan={5}>{!loaded ? "Loading accounts…" : people.length ? "No accounts match that search." : "No accounts yet."}</td>
+                <td colSpan={6}>{!loaded ? "Loading accounts…" : people.length ? "No accounts match that search." : "No accounts yet."}</td>
               </tr>
             )}
           </tbody>

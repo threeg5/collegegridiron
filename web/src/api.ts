@@ -663,6 +663,13 @@ export async function createAdminUser(input: {
   });
 }
 
+export async function setAdminPassword(userId: string, password: string) {
+  return authJson<AdminUser>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
 function readCookie(name: string) {
   const prefix = `${name}=`;
   for (const part of document.cookie.split("; ")) {
