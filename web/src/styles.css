@@ -695,6 +695,8 @@ td small {
   color: var(--silver);
 }
 
+.chip.hard { color: var(--gold-2); border-color: rgba(212, 160, 23, 0.55); }
+.chip.soft { color: var(--silver); border-color: #3d5674; }
 .chip.hit { color: var(--hit); border-color: rgba(62, 224, 143, 0.45); }
 .chip.miss { color: var(--miss); border-color: rgba(226, 75, 61, 0.45); }
 .chip.dnp { color: var(--miss); }
@@ -917,6 +919,125 @@ tr.miss .stat { color: var(--miss); font-weight: 700; }
   margin: 0 0 2px;
 }
 
+.rating-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+  align-items: start;
+  margin: 2px 0 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.rating-side span {
+  font-family: "Barlow Condensed", sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-2);
+  font-size: 13px;
+}
+
+.rating-side b {
+  display: block;
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 0.95;
+  color: var(--paper);
+}
+
+.rating-side small,
+.rating-conf,
+.rating-mid small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rating-side:last-child {
+  text-align: right;
+}
+
+.rating-side:last-child .rating-parts {
+  justify-content: flex-end;
+}
+
+.rating-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 4px 0 0;
+  color: var(--silver);
+  font-size: 13px;
+}
+
+.rating-parts span {
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--silver);
+  font-family: "Source Sans 3", sans-serif;
+  font-size: 13px;
+}
+
+.rating-mid {
+  grid-column: 1 / -1;
+  text-align: left;
+  max-width: none;
+}
+
+.rating-mid strong {
+  display: block;
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.score-line {
+  color: var(--paper);
+  font-family: "Barlow Condensed", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.schedule-read {
+  margin: 2px 0 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--paper);
+  font-size: 15px;
+}
+
+.schedule-read > span {
+  margin-right: 8px;
+  font-family: "Barlow Condensed", sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-2);
+}
+
+.schedule-read b {
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.schedule-read small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.schedule-log {
+  font-family: "Barlow Condensed", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold-2);
+  font-size: 13px;
+}
+
 .expected-mid {
   display: flex;
   flex-direction: column;
@@ -1002,6 +1123,16 @@ tr.miss .stat { color: var(--miss); font-weight: 700; }
   margin: 2px 0 0;
   font-size: 15px;
   font-weight: 700;
+}
+
+.team-stats dd small {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
 }
 
 .missing-block {
@@ -1420,7 +1551,7 @@ tr.miss .stat { color: var(--miss); font-weight: 700; }
   .brand h1 { font-size: 26px; }
   .rate { font-size: 40px; }
   .slate-bar, .matchup-grid, .expected-scores, .matchup-head { grid-template-columns: 1fr; flex-direction: column; align-items: start; }
-  .expected-scores { grid-template-columns: 1fr 1fr; }
+  .rating-board, .expected-scores { grid-template-columns: 1fr 1fr; }
   .expected-scores b { font-size: 32px; }
   .expected-extra { justify-self: start; text-align: left; }
   .team-stats { grid-template-columns: 1fr 1fr; }

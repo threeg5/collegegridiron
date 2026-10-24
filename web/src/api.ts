@@ -244,6 +244,10 @@ export type SlateGame = {
   home_conference: string | null;
   away_conference: string | null;
   neutral: boolean;
+  away_slate?: "soft" | "average" | "hard" | "thin" | null;
+  home_slate?: "soft" | "average" | "hard" | "thin" | null;
+  away_score_rating?: number | null;
+  home_score_rating?: number | null;
 };
 
 export type SlateResponse = {
@@ -448,6 +452,39 @@ export type GameProps = {
   players: PropPlayer[];
 };
 
+export type TeamSlate = {
+  games: number;
+  opponent_rating: number | null;
+  team_rating: number | null;
+  rank: number | null;
+  of: number;
+  label: "soft" | "average" | "hard" | "thin";
+  rank_label: string | null;
+  text: string;
+  score: number | null;
+  offense: number | null;
+  defense: number | null;
+  special: number | null;
+  conference: string | null;
+  conference_rating: number | null;
+  power_rank: number | null;
+  power_of: number | null;
+  power_label: string | null;
+};
+
+export type ScheduleScore = {
+  away_points: number;
+  home_points: number;
+  total: number;
+  margin: number;
+  away_sos: number;
+  home_sos: number;
+  away_label: string;
+  home_label: string;
+  away_text: string;
+  home_text: string;
+};
+
 export type TeamCard = {
   team: string;
   name: string;
@@ -456,6 +493,7 @@ export type TeamCard = {
   recent: TeamProfile | null;
   role: TeamProfile | null;
   missing: MissingRegular[];
+  slate?: TeamSlate | null;
 };
 
 export type ExpectedScore = {
@@ -477,6 +515,7 @@ export type ExpectedScore = {
     total: number;
     margin: number;
   } | null;
+  schedule?: ScheduleScore | null;
 };
 
 export type Matchup = {

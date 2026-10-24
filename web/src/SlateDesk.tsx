@@ -68,16 +68,19 @@ function sampleRange(profile: TeamProfile | null) {
   return `${profile.games} REG games · ${profile.from_season} W${profile.from_week}–${profile.to_season} W${profile.to_week}`;
 }
 
+function marginLabel(
+  game: { home_team: string; away_team: string },
+  margin: number,
+) {
+  if (margin > 0.4) return `${game.home_team} by ${num(margin)}`;
+  if (margin < -0.4) return `${game.away_team} by ${num(Math.abs(margin))}`;
+  return "Pick 'em";
+}
+
 function expectedLabel(matchup: Matchup) {
   const expected = matchup.expected;
   if (!expected) return "Need more completed games to build an expected score.";
-  if (expected.margin > 0.4) {
-    return `${matchup.home.team} by ${num(expected.margin)}`;
-  }
-  if (expected.margin < -0.4) {
-    return `${matchup.away.team} by ${num(Math.abs(expected.margin))}`;
-  }
-  return "Pick 'em";
+  return marginLabel(matchup.game, expected.margin);
 }
 
 /** Books only hang totals and spreads on 0 or .5. */
@@ -315,6 +318,29 @@ function TpeLineBoard({
   );
 }
 
+function RatingSide({ card }: { card: TeamCard }) {
+  const slate = card.slate;
+  if (!slate || slate.score == null) return null;
+  return (
+    <div className="rating-side">
+      <span>{card.team}</span>
+      <b>{signed(slate.score)}</b>
+      {slate.power_label && <small>{slate.power_label}</small>}
+      <p className="rating-parts">
+        <span>Off {signed(slate.offense)}</span>
+        <span>Def {signed(slate.defense)}</span>
+        <span>ST {signed(slate.special)}</span>
+      </p>
+      {slate.conference && (
+        <p className="rating-conf">
+          {slate.conference}
+          {slate.conference_rating != null ? ` ${signed(slate.conference_rating)}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function TeamFacts({
   card,
   roleLabel,
@@ -333,6 +359,42 @@ function TeamFacts({
       <p className="sub">{sampleRange(overall)}</p>
       <dl className="team-stats">
         <div>
+          <dt>Score</dt>
+          <dd>
+            {card.slate?.score != null ? (
+              <>
+                {signed(card.slate.score)}
+                {card.slate.power_label && <small>{card.slate.power_label}</small>}
+              </>
+            ) : (
+              "—"
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Off / Def / ST</dt>
+          <dd>
+            {card.slate?.score != null
+              ? `${signed(card.slate.offense)} / ${signed(card.slate.defense)} / ${signed(card.slate.special)}`
+              : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>Conference</dt>
+          <dd>
+            {card.slate?.conference ? (
+              <>
+                {card.slate.conference}
+                {card.slate.conference_rating != null && (
+                  <small>{signed(card.slate.conference_rating)}</small>
+                )}
+              </>
+            ) : (
+              "—"
+            )}
+          </dd>
+        </div>
+        <div>
           <dt>PF / PA</dt>
           <dd>
             {num(overall?.ppg)} / {num(overall?.papg)}
@@ -341,6 +403,24 @@ function TeamFacts({
         <div>
           <dt>Margin</dt>
           <dd>{signed(overall?.margin)}</dd>
+        </div>
+        <div>
+          <dt>Slate</dt>
+          <dd>
+            {card.slate && card.slate.label !== "thin" ? (
+              <>
+                {card.slate.label === "hard"
+                  ? "Hard"
+                  : card.slate.label === "soft"
+                    ? "Soft"
+                    : "Average"}{" "}
+                {signed(card.slate.opponent_rating)}
+                {card.slate.rank_label && <small>{card.slate.rank_label}</small>}
+              </>
+            ) : (
+              "—"
+            )}
+          </dd>
         </div>
         <div>
           <dt>Yds / allwd</dt>
@@ -390,12 +470,18 @@ function GameCard({
   game: SlateGame;
   onOpen: (id: string) => void;
 }) {
-  const tags = [];
-  if (game.div_game) tags.push("Conf");
-  if (game.is_primetime) tags.push("Prime");
-  if (game.is_altitude) tags.push("Alt");
-  if (game.neutral) tags.push("Neutral");
-  if (game.surface_group) tags.push(game.surface_group);
+  const tags: { text: string; kind?: string }[] = [];
+  if (game.away_slate === "soft" || game.away_slate === "hard") {
+    tags.push({ text: `${game.away_team} ${game.away_slate}`, kind: game.away_slate });
+  }
+  if (game.home_slate === "soft" || game.home_slate === "hard") {
+    tags.push({ text: `${game.home_team} ${game.home_slate}`, kind: game.home_slate });
+  }
+  if (game.div_game) tags.push({ text: "Conf" });
+  if (game.is_primetime) tags.push({ text: "Prime" });
+  if (game.is_altitude) tags.push({ text: "Alt" });
+  if (game.neutral) tags.push({ text: "Neutral" });
+  if (game.surface_group) tags.push({ text: game.surface_group });
   return (
     <button type="button" className="game-card" onClick={() => onOpen(game.game_id)}>
       <p className="kicker">{kickoff(game)}</p>
@@ -411,6 +497,11 @@ function GameCard({
         {roofLabel(game)}
         {game.stadium ? ` · ${game.stadium}` : ""}
       </p>
+      {(game.away_score_rating != null || game.home_score_rating != null) && (
+        <p className="spot-line score-line">
+          Score {signed(game.away_score_rating)} / {signed(game.home_score_rating)}
+        </p>
+      )}
       <p className="spot-line">
         Rest {game.away_rest ?? "—"}d / {game.home_rest ?? "—"}d
         {game.away_travel && game.away_travel !== "none"
@@ -424,8 +515,8 @@ function GameCard({
       )}
       <div className="card-tags">
         {tags.map((tag) => (
-          <span className="chip" key={tag}>
-            {tag}
+          <span className={tag.kind ? `chip ${tag.kind}` : "chip"} key={tag.text}>
+            {tag.text}
           </span>
         ))}
       </div>
@@ -664,6 +755,17 @@ export default function SlateDesk({
                   )}
                 </div>
               </div>
+              {away.slate?.score != null && home.slate?.score != null && (
+                <div className="rating-board">
+                  <div className="rating-mid">
+                    <small>Desk score</small>
+                    <strong>{marginLabel(game, home.slate.score - away.slate.score)}</strong>
+                    <small>Off + def + special teams. 0 is an average FBS team. Conference is that league’s average.</small>
+                  </div>
+                  <RatingSide card={away} />
+                  <RatingSide card={home} />
+                </div>
+              )}
               <div className="book-bar log-row">
                 {account && tickets ? (
                   <>

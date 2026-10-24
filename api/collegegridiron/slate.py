@@ -192,7 +192,11 @@ def slate_games(conn, season: int, week: int, season_type: str) -> list[dict]:
         """,
         (season, week, season_type),
     )
-    return [decorate_game(game) for game in games]
+    games = [decorate_game(game) for game in games]
+    from collegegridiron.sos import annotate_slate
+
+    annotate_slate(conn, games)
+    return games
 
 
 def missing_for(conn, season: int, week: int, team: str) -> list[dict]:
@@ -443,10 +447,15 @@ def get_matchup(conn, game_id: str) -> dict | None:
     since = min((d for d in since_candidates if d), default=None)
     env = league_environment(conn, since, before, "REG")
     expected = expected_from_profiles(home, away, env, bool(game.get("neutral")))
+    from collegegridiron.sos import apply_schedule, slate_views
     from collegegridiron.tpe_context import apply_expected, load_game_context
 
+    views = slate_views(conn, before)
+    away["slate"] = views.get(game["away_team"])
+    home["slate"] = views.get(game["home_team"])
     ctx = load_game_context(conn, game, home.get("missing") or [], away.get("missing") or [])
     expected = apply_expected(expected, ctx)
+    expected = apply_schedule(expected, home.get("slate"), away.get("slate"))
     from collegegridiron.freshness import injury_freshness
 
     return {
