@@ -318,6 +318,18 @@ def views_before(
     conf_rating = {
         conf: round(sum(values) / len(values), 1) for conf, values in conf_values.items()
     }
+    conf_members: dict[str, list[str]] = {}
+    for team in parts:
+        conf = conferences.get(team)
+        if conf:
+            conf_members.setdefault(conf, []).append(team)
+    conf_place: dict[str, int] = {}
+    conf_size: dict[str, int] = {}
+    for conf, teams in conf_members.items():
+        ordered = sorted(teams, key=lambda team: (-parts[team][3], team))
+        conf_size[conf] = len(ordered)
+        for index, team in enumerate(ordered, start=1):
+            conf_place[team] = index
     views: dict[str, dict] = {}
     for team, games in logs.items():
         conf = conferences.get(team)
@@ -338,6 +350,9 @@ def views_before(
                 "special": None,
                 "conference": conf,
                 "conference_rating": conf_score,
+                "conference_rank": None,
+                "conference_of": conf_size.get(conf) if conf else None,
+                "conference_rank_label": None,
                 "power_rank": None,
                 "power_of": power_of,
                 "power_label": None,
@@ -349,6 +364,11 @@ def views_before(
         place = _ordinal(rank[team])
         off, deff, st, score = parts[team]
         power_place = _ordinal(power_rank[team])
+        conf_rank = conf_place.get(team)
+        conf_n = conf_size.get(conf) if conf else None
+        conf_rank_label = (
+            f"{_ordinal(conf_rank)} of {conf_n}" if conf_rank and conf_n else None
+        )
         views[team] = {
             "games": len(games),
             "opponent_rating": sos,
@@ -367,6 +387,9 @@ def views_before(
             "special": st,
             "conference": conf,
             "conference_rating": conf_score,
+            "conference_rank": conf_rank,
+            "conference_of": conf_n,
+            "conference_rank_label": conf_rank_label,
             "power_rank": power_rank[team],
             "power_of": power_of,
             "power_label": f"{power_place} of {power_of}",

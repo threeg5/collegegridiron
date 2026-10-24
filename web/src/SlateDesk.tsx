@@ -335,6 +335,7 @@ function RatingSide({ card }: { card: TeamCard }) {
         <p className="rating-conf">
           {slate.conference}
           {slate.conference_rating != null ? ` ${signed(slate.conference_rating)}` : ""}
+          {slate.conference_rank_label ? ` · ${slate.conference_rank_label}` : ""}
         </p>
       )}
     </div>
@@ -385,8 +386,13 @@ function TeamFacts({
             {card.slate?.conference ? (
               <>
                 {card.slate.conference}
-                {card.slate.conference_rating != null && (
-                  <small>{signed(card.slate.conference_rating)}</small>
+                {(card.slate.conference_rating != null || card.slate.conference_rank_label) && (
+                  <small>
+                    {card.slate.conference_rating != null ? signed(card.slate.conference_rating) : ""}
+                    {card.slate.conference_rank_label
+                      ? `${card.slate.conference_rating != null ? " · " : ""}${card.slate.conference_rank_label}`
+                      : ""}
+                  </small>
                 )}
               </>
             ) : (

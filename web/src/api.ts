@@ -467,6 +467,9 @@ export type TeamSlate = {
   special: number | null;
   conference: string | null;
   conference_rating: number | null;
+  conference_rank: number | null;
+  conference_of: number | null;
+  conference_rank_label: string | null;
   power_rank: number | null;
   power_of: number | null;
   power_label: string | null;
